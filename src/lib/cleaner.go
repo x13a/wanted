@@ -60,7 +60,7 @@ func (c *Config) Set(s string) error {
 
 func (c *Config) prepare() {
 	if c.Async.Timeout == 0 {
-		c.Async.Timeout = Duration(15 * time.Second)
+		c.Async.Timeout = Duration(1 << 4 * time.Second)
 	}
 	if c.Kill.Signal == 0 {
 		c.Kill.Signal = syscall.SIGKILL
