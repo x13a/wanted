@@ -1,111 +1,33 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
+	"log"
 	"os"
-	"strings"
+	"strconv"
 	"syscall"
-	"time"
 
 	cleaner "./lib"
 )
 
 const (
-	FlagConfig = "c"
-	FlagUnlink = "u"
+	FlagConfig  = "c"
+	FlagPidFile = "p"
+	FlagUnlink  = "u"
+	FlagNoLog   = "n"
 
 	ExOk     = 0
+	ExErr    = 1
 	ExArgErr = 2
-
-	ArgStdin = "-"
 )
-
-type (
-	Signal  cleaner.Signal
-	Timeout time.Duration
-)
-
-func (s *Signal) UnmarshalJSON(b []byte) error {
-	var str string
-	if err := json.Unmarshal(b, &str); err != nil {
-		return err
-	}
-	str = strings.ToUpper(str)
-	var sig cleaner.Signal
-	switch str {
-	case "USR", "USR1", "SIGUSR", "SIGUSR1":
-		sig = cleaner.SIGUSR1
-	case "USR2", "SIGUSR2":
-		sig = cleaner.SIGUSR2
-	default:
-		return errors.New("signal parse error")
-	}
-	*s = Signal(sig)
-	return nil
-}
-
-func (s Signal) unwrap() cleaner.Signal {
-	return cleaner.Signal(s)
-}
-
-func (t *Timeout) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-	v, err := time.ParseDuration(s)
-	if err != nil {
-		return err
-	}
-	*t = Timeout(v)
-	return nil
-}
-
-func (t Timeout) unwrap() time.Duration {
-	return time.Duration(t)
-}
-
-type Config struct {
-	Signal  Signal `json:"signal"`
-	Request struct {
-		Urls    []string `json:"urls"`
-		Timeout *Timeout `json:"timeout"`
-	} `json:"request"`
-	Kill     cleaner.Kill `json:"kill"`
-	Paths    []string     `json:"paths"`
-	Commands []string     `json:"commands"`
-	path     string
-}
-
-func (c Config) String() string {
-	return ""
-}
-
-func (c *Config) Set(s string) error {
-	var file *os.File
-	var err error
-	if s == ArgStdin {
-		file = os.Stdin
-	} else {
-		file, err = os.Open(s)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-	}
-	if err := json.NewDecoder(file).Decode(c); err != nil {
-		return err
-	}
-	c.path = s
-	return nil
-}
 
 type Opts struct {
-	config Config
-	unlink bool
+	config  cleaner.Config
+	pidfile string
+	unlink  bool
+	noLog   bool
 }
 
 func parseArgs() *Opts {
@@ -113,7 +35,9 @@ func parseArgs() *Opts {
 	isHelp := flag.Bool("h", false, "Print help and exit")
 	isVersion := flag.Bool("V", false, "Print version and exit")
 	flag.Var(&opts.config, FlagConfig, "Path to the configuration file")
+	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid file")
 	flag.BoolVar(&opts.unlink, FlagUnlink, false, "Unlink configuration file")
+	flag.BoolVar(&opts.noLog, FlagNoLog, false, "Do not log cleaner errors")
 	flag.Parse()
 	if *isHelp {
 		flag.Usage()
@@ -123,7 +47,7 @@ func parseArgs() *Opts {
 		fmt.Println(cleaner.Version)
 		os.Exit(ExOk)
 	}
-	if opts.config.path == "" {
+	if opts.config.Path() == "" {
 		fmt.Fprintf(os.Stderr, "`%s` is required\n", FlagConfig)
 		os.Exit(ExArgErr)
 	}
@@ -132,18 +56,40 @@ func parseArgs() *Opts {
 
 func main() {
 	opts := parseArgs()
-	if opts.unlink && opts.config.path != ArgStdin {
-		syscall.Unlink(opts.config.path)
+	c := cleaner.NewCleaner(opts.config)
+	if err := c.Check(); err != nil {
+		log.Fatalln(err.Error())
 	}
-	timeout := time.Duration(-1)
-	if opts.config.Request.Timeout != nil {
-		timeout = opts.config.Request.Timeout.unwrap()
+	pid := os.Getpid()
+	if opts.pidfile != "" {
+		if err := ioutil.WriteFile(
+			opts.pidfile,
+			[]byte(strconv.Itoa(pid)),
+			0644,
+		); err != nil {
+			log.Fatalln(err.Error())
+		}
 	}
-	cleaner.NewCleaner(
-		opts.config.Signal.unwrap(),
-		cleaner.NewRequest(opts.config.Request.Urls, timeout),
-		cleaner.NewKill(opts.config.Kill.Uids, opts.config.Kill.Signal),
-		opts.config.Paths,
-		opts.config.Commands,
-	).Run()
+	if opts.unlink {
+		if path := opts.config.Path(); path != cleaner.ArgStdin {
+			if err := syscall.Unlink(path); err != nil {
+				log.Fatalln(err.Error())
+			}
+		}
+	}
+	if os.Geteuid() != 0 {
+		log.Println("[WARNING] running not root")
+	}
+	log.Printf("[INFO] pid: %d\n", pid)
+	c.StartMonitor()
+	exitCode := ExOk
+	for err := range c.Errors() {
+		if err != nil {
+			exitCode = ExErr
+			if !opts.noLog {
+				log.Println(err.Error())
+			}
+		}
+	}
+	os.Exit(exitCode)
 }
