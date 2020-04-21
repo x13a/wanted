@@ -27,7 +27,7 @@ type Opts struct {
 	config  cleaner.Config
 	pidfile string
 	unlink  bool
-	noLog   bool
+	nolog   bool
 }
 
 func parseArgs() *Opts {
@@ -37,7 +37,7 @@ func parseArgs() *Opts {
 	flag.Var(&opts.config, FlagConfig, "Path to the configuration file")
 	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid file")
 	flag.BoolVar(&opts.unlink, FlagUnlink, false, "Unlink configuration file")
-	flag.BoolVar(&opts.noLog, FlagNoLog, false, "Do not log cleaner errors")
+	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log cleaner errors")
 	flag.Parse()
 	if *isHelp {
 		flag.Usage()
@@ -86,7 +86,7 @@ func main() {
 	for err := range c.Errors() {
 		if err != nil {
 			exitCode = ExErr
-			if !opts.noLog {
+			if !opts.nolog {
 				log.Println(err.Error())
 			}
 		}
