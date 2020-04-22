@@ -204,7 +204,7 @@ func (c *Cleaner) startMonitor() {
 	threshold := max(1, c.config.Notify.Threshold)
 	prethreshold := threshold - 1
 	sigchan := make(chan os.Signal, threshold*2+1)
-	fire := make(chan struct{}, 1)
+	fire := make(chan struct{})
 	signal.Notify(sigchan, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
 	delay := c.config.Notify.Delay.Unwrap()
 	arm := func(ctx context.Context) {
