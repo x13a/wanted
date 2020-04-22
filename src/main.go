@@ -34,10 +34,10 @@ func parseArgs() *Opts {
 	opts := &Opts{}
 	isHelp := flag.Bool("h", false, "Print help and exit")
 	isVersion := flag.Bool("V", false, "Print version and exit")
-	flag.Var(&opts.config, FlagConfig, "Path to the configuration file")
+	flag.Var(&opts.config, FlagConfig, "Path to configuration file")
 	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid file")
 	flag.BoolVar(&opts.unlink, FlagUnlink, false, "Unlink configuration file")
-	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log cleaner errors")
+	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log clean errors")
 	flag.Parse()
 	if *isHelp {
 		flag.Usage()

@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	Version  = "0.0.2"
+	Version  = "0.0.3"
 	ArgStdin = "-"
 
 	shellCommandFlag = "-c"
@@ -144,6 +144,7 @@ func (r Remove) len() int {
 
 type Run struct {
 	Commands  []string `json:"commands"`
+	Env       []string `json:"env"`
 	ShellPath string   `json:"shell_path"`
 }
 
@@ -331,14 +332,17 @@ func (c *Cleaner) doAsyncRun(wg *sync.WaitGroup) {
 	if n > 0 {
 		wg.Add(n)
 		timeout := c.config.Async.Timeout.Unwrap()
+		env := append(os.Environ(), c.config.Async.Run.Env...)
 		run := func(command string) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			c.errors <- exec.CommandContext(
+			cmd := exec.CommandContext(
 				ctx,
 				c.config.Async.Run.ShellPath,
 				shellCommandFlag,
 				command,
-			).Run()
+			)
+			cmd.Env = env
+			c.errors <- cmd.Run()
 			cancel()
 			wg.Done()
 		}
@@ -380,12 +384,17 @@ func (c *Cleaner) doRemove() {
 }
 
 func (c *Cleaner) doRun() {
-	for _, command := range c.config.Run.Commands {
-		c.errors <- exec.Command(
-			c.config.Run.ShellPath,
-			shellCommandFlag,
-			command,
-		).Run()
+	if c.config.Run.len() > 0 {
+		env := append(os.Environ(), c.config.Run.Env...)
+		for _, command := range c.config.Run.Commands {
+			cmd := exec.Command(
+				c.config.Run.ShellPath,
+				shellCommandFlag,
+				command,
+			)
+			cmd.Env = env
+			c.errors <- cmd.Run()
+		}
 	}
 }
 
