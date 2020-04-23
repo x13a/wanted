@@ -7,15 +7,15 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"syscall"
 
 	cleaner "./lib"
 )
 
 const (
+	FlagCheck   = "C"
 	FlagConfig  = "c"
 	FlagPidFile = "p"
-	FlagUnlink  = "u"
+	FlagRemove  = "r"
 	FlagNoLog   = "n"
 
 	ExOk     = 0
@@ -24,9 +24,10 @@ const (
 )
 
 type Opts struct {
+	check   cleaner.Config
 	config  cleaner.Config
 	pidfile string
-	unlink  bool
+	remove  bool
 	nolog   bool
 }
 
@@ -34,9 +35,10 @@ func parseArgs() *Opts {
 	opts := &Opts{}
 	isHelp := flag.Bool("h", false, "Print help and exit")
 	isVersion := flag.Bool("V", false, "Print version and exit")
+	flag.Var(&opts.check, FlagCheck, "Check configuration file and exit")
 	flag.Var(&opts.config, FlagConfig, "Path to configuration file")
 	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid file")
-	flag.BoolVar(&opts.unlink, FlagUnlink, false, "Unlink configuration file")
+	flag.BoolVar(&opts.remove, FlagRemove, false, "Remove configuration file")
 	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log clean errors")
 	flag.Parse()
 	if *isHelp {
@@ -47,7 +49,9 @@ func parseArgs() *Opts {
 		fmt.Println(cleaner.Version)
 		os.Exit(ExOk)
 	}
-	if opts.config.Path() == "" {
+	if opts.check.Path() != "" {
+		opts.config = opts.check
+	} else if opts.config.Path() == "" {
 		fmt.Fprintf(os.Stderr, "`%s` is required\n", FlagConfig)
 		os.Exit(ExArgErr)
 	}
@@ -59,6 +63,8 @@ func main() {
 	c := cleaner.NewCleaner(opts.config)
 	if err := c.Check(); err != nil {
 		log.Fatalln(err.Error())
+	} else if opts.check.Path() != "" {
+		os.Exit(ExOk)
 	}
 	pid := os.Getpid()
 	if opts.pidfile != "" {
@@ -70,9 +76,9 @@ func main() {
 			log.Fatalln(err.Error())
 		}
 	}
-	if opts.unlink {
+	if opts.remove {
 		if path := opts.config.Path(); path != cleaner.ArgStdin {
-			if err := syscall.Unlink(path); err != nil {
+			if err := os.Remove(path); err != nil {
 				log.Fatalln(err.Error())
 			}
 		}
@@ -80,7 +86,7 @@ func main() {
 	if os.Geteuid() != 0 {
 		log.Println("[WARNING] running not root")
 	}
-	log.Printf("[INFO] pid: %d\n", pid)
+	log.Println("[INFO] pid:", pid)
 	c.StartMonitor()
 	exitCode := ExOk
 	for err := range c.Errors() {

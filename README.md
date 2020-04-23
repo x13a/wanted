@@ -16,49 +16,23 @@ $ brew install x31a/tap/cleaner
 ## Usage
 ```text
 Usage of cleaner:
+  -C value
+    	Check configuration file and exit
   -V	Print version and exit
   -c value
-    	Path to the configuration file
+    	Path to configuration file
   -h	Print help and exit
   -n	Do not log clean errors
   -p string
     	Write pid file
-  -u	Unlink configuration file
+  -r	Remove configuration file
 ```
 
 ## Example
 
-Config:
-```json
-{
-  "notify": {
-    "threshold": 1,
-    "delay": "5s"
-  },
-  "async": {
-    "run": {
-      "commands": [],
-      "env": [],
-      "shell_path": ""
-    },
-    "request": {
-      "urls": []
-    },
-    "timeout": "16s"
-  },
-  "kill": {
-    "uids": [],
-    "signal": 9
-  },
-  "remove": {
-    "paths": []
-  },
-  "run": {
-    "commands": [],
-    "env": [],
-    "shell_path": ""
-  }
-}
+To check config and exit:
+```sh
+$ cleaner -C ~/cleaner.json
 ```
 
 To default run:

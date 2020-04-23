@@ -3,8 +3,10 @@ package cleaner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,10 +16,8 @@ import (
 )
 
 const (
-	Version  = "0.0.3"
+	Version  = "0.0.4"
 	ArgStdin = "-"
-
-	shellCommandFlag = "-c"
 
 	_X_OK = 0x1
 )
@@ -70,15 +70,14 @@ func (c *Config) prepare() {
 }
 
 func (c *Config) check() error {
-	if c.Async.Run.len() > 0 {
-		if err := c.Async.Run.check(); err != nil {
-			return err
-		}
+	if err := c.Async.check(); err != nil {
+		return err
 	}
-	if c.Run.len() > 0 {
-		if err := c.Run.check(); err != nil {
-			return err
-		}
+	if err := c.Kill.check(); err != nil {
+		return err
+	}
+	if err := c.Run.check(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -107,12 +106,37 @@ type Notify struct {
 	Delay     Duration `json:"delay"`
 }
 
+type UrlError struct {
+	Url         string
+	Description string
+}
+
+func (e *UrlError) Error() string {
+	return fmt.Sprintf("%s: %s", e.Description, e.Url)
+}
+
 type Request struct {
 	Urls []string `json:"urls"`
 }
 
 func (r Request) len() int {
 	return len(r.Urls)
+}
+
+func (r Request) check() error {
+	for _, url := range r.Urls {
+		u, err := urlpkg.Parse(url)
+		if err != nil {
+			return err
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return &UrlError{url, "unsupported protocol scheme"}
+		}
+		if u.Host == "" {
+			return &UrlError{url, "http: no Host in request URL"}
+		}
+	}
+	return nil
 }
 
 type Async struct {
@@ -125,13 +149,45 @@ func (a Async) len() int {
 	return a.Run.len() + a.Request.len()
 }
 
+func (a Async) check() error {
+	if err := a.Run.check(); err != nil {
+		return err
+	}
+	if err := a.Request.check(); err != nil {
+		return err
+	}
+	return nil
+}
+
+type KillError struct {
+	Pid int
+	Err error
+}
+
+func (e *KillError) Error() string {
+	return fmt.Sprintf("%s: %d", e.Err.Error(), e.Pid)
+}
+
+func (e *KillError) Unwrap() error {
+	return e.Err
+}
+
 type Kill struct {
-	Uids   []int          `json:"uids"`
+	Pids   []int          `json:"pids"`
 	Signal syscall.Signal `json:"signal"`
 }
 
 func (k Kill) len() int {
-	return len(k.Uids)
+	return len(k.Pids)
+}
+
+func (k Kill) check() error {
+	for _, pid := range k.Pids {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return &KillError{pid, err}
+		}
+	}
+	return nil
 }
 
 type Remove struct {
@@ -143,9 +199,10 @@ func (r Remove) len() int {
 }
 
 type Run struct {
-	Commands  []string `json:"commands"`
-	Env       []string `json:"env"`
-	ShellPath string   `json:"shell_path"`
+	Commands   []string `json:"commands"`
+	Env        []string `json:"env"`
+	Executable string   `json:"executable"`
+	Option     string   `json:"option"`
 }
 
 func (r Run) len() int {
@@ -153,16 +210,22 @@ func (r Run) len() int {
 }
 
 func (r *Run) prepare() {
-	if r.ShellPath == "" {
-		r.ShellPath = os.Getenv("SHELL")
-		if r.ShellPath == "" {
-			r.ShellPath = "/bin/sh"
+	if r.Executable == "" {
+		r.Executable = os.Getenv("SHELL")
+		if r.Executable == "" {
+			r.Executable = "/bin/sh"
+		}
+		if r.Option == "" {
+			r.Option = "-c"
 		}
 	}
 }
 
 func (r Run) check() error {
-	return syscall.Access(r.ShellPath, _X_OK)
+	if err := syscall.Access(r.Executable, _X_OK); err != nil {
+		return &os.PathError{"access", r.Executable, err}
+	}
+	return nil
 }
 
 func max(v ...int) int {
@@ -337,8 +400,8 @@ func (c *Cleaner) doAsyncRun(wg *sync.WaitGroup) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			cmd := exec.CommandContext(
 				ctx,
-				c.config.Async.Run.ShellPath,
-				shellCommandFlag,
+				c.config.Async.Run.Executable,
+				c.config.Async.Run.Option,
 				command,
 			)
 			cmd.Env = env
@@ -372,8 +435,10 @@ func (c *Cleaner) doAsyncRequest(wg *sync.WaitGroup) {
 }
 
 func (c *Cleaner) doKill() {
-	for _, uid := range c.config.Kill.Uids {
-		c.errors <- syscall.Kill(uid, c.config.Kill.Signal)
+	for _, pid := range c.config.Kill.Pids {
+		if err := syscall.Kill(pid, c.config.Kill.Signal); err != nil {
+			c.errors <- &KillError{pid, err}
+		}
 	}
 }
 
@@ -388,8 +453,8 @@ func (c *Cleaner) doRun() {
 		env := append(os.Environ(), c.config.Run.Env...)
 		for _, command := range c.config.Run.Commands {
 			cmd := exec.Command(
-				c.config.Run.ShellPath,
-				shellCommandFlag,
+				c.config.Run.Executable,
+				c.config.Run.Option,
 				command,
 			)
 			cmd.Env = env

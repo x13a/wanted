@@ -1,0 +1,31 @@
+{
+  "notify": {
+    "threshold": 1,
+    "delay": "0s"
+  },
+  "async": {
+    "run": {
+      "commands": [],
+      "env": [],
+      "executable": "/bin/sh",
+      "option": "-c"
+    },
+    "request": {
+      "urls": []
+    },
+    "timeout": "16s"
+  },
+  "kill": {
+    "pids": [],
+    "signal": 9
+  },
+  "remove": {
+    "paths": []
+  },
+  "run": {
+    "commands": [],
+    "env": [],
+    "executable": "/bin/sh",
+    "option": "-c"
+  }
+}
