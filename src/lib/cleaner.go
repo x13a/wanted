@@ -276,7 +276,6 @@ func (c *Cleaner) startMonitor() {
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return
 		case <-t.C:
 			c.state.Lock()
 			if c.state.isWaiting {
