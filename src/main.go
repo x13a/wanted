@@ -52,7 +52,12 @@ func parseArgs() *Opts {
 	if opts.check.Path() != "" {
 		opts.config = opts.check
 	} else if opts.config.Path() == "" {
-		fmt.Fprintf(os.Stderr, "`%s` is required\n", FlagConfig)
+		fmt.Fprintf(
+			os.Stderr,
+			"-{ %s | %s } required\n",
+			FlagCheck,
+			FlagConfig,
+		)
 		os.Exit(ExArgErr)
 	}
 	return opts
