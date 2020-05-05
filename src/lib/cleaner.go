@@ -2,24 +2,35 @@ package cleaner
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	mailpkg "net/mail"
+	"net/smtp"
 	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
 const (
-	Version  = "0.0.4"
-	ArgStdin = "-"
+	Version = "0.0.5"
 
-	_X_OK = 0x1
+	EnvMailUsername = "CLEANER_MAIL_USERNAME"
+	EnvMailPassword = "CLEANER_MAIL_PASSWORD"
+
+	DefaultTimeout     = Duration(1 << 4 * time.Second)
+	DefaultSignal      = syscall.SIGKILL
+	FallbackExecutable = "/bin/sh"
+
+	ArgStdin = "-"
 )
 
 type Config struct {
@@ -51,7 +62,7 @@ func (c *Config) Set(s string) error {
 		}
 		defer file.Close()
 	}
-	if err := json.NewDecoder(file).Decode(c); err != nil {
+	if err = json.NewDecoder(file).Decode(c); err != nil {
 		return err
 	}
 	c.path = s
@@ -59,14 +70,13 @@ func (c *Config) Set(s string) error {
 }
 
 func (c *Config) prepare() {
-	if c.Async.Timeout == 0 {
-		c.Async.Timeout = Duration(1 << 4 * time.Second)
-	}
-	if c.Kill.Signal == 0 {
-		c.Kill.Signal = syscall.SIGKILL
-	}
-	c.Async.Run.prepare()
+	c.Async.prepare()
+	c.Kill.prepare()
 	c.Run.prepare()
+}
+
+func (c Config) len() int {
+	return c.Async.len() + c.Kill.len() + c.Remove.len() + c.Run.len()
 }
 
 func (c *Config) check() error {
@@ -89,9 +99,15 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return err
 	}
-	v, err := time.ParseDuration(s)
-	if err != nil {
-		return err
+	var v time.Duration
+	var err error
+	if s == "" {
+		v = 0
+	} else {
+		v, err = time.ParseDuration(s)
+		if err != nil {
+			return err
+		}
 	}
 	*d = Duration(v)
 	return nil
@@ -106,13 +122,14 @@ type Notify struct {
 	Delay     Duration `json:"delay"`
 }
 
-type UrlError struct {
-	Url         string
+type CheckError struct {
+	Op          string
+	Value       interface{}
 	Description string
 }
 
-func (e *UrlError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Description, e.Url)
+func (e *CheckError) Error() string {
+	return fmt.Sprintf("%s > %s: %v", e.Op, e.Description, e.Value)
 }
 
 type Request struct {
@@ -124,29 +141,87 @@ func (r Request) len() int {
 }
 
 func (r Request) check() error {
+	op := "request"
 	for _, url := range r.Urls {
-		u, err := urlpkg.Parse(url)
+		u, err := urlpkg.ParseRequestURI(url)
 		if err != nil {
 			return err
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return &UrlError{url, "unsupported protocol scheme"}
+			return &CheckError{op, url, "unsupported protocol scheme"}
 		}
 		if u.Host == "" {
-			return &UrlError{url, "http: no Host in request URL"}
+			return &CheckError{op, url, "no host"}
 		}
 	}
 	return nil
 }
 
+type Mail struct {
+	Hosts    []string `json:"hosts"`
+	Username string   `json:"username"`
+	Password string   `json:"password"`
+	From     string   `json:"from"`
+	To       []string `json:"to"`
+	Subject  string   `json:"subject"`
+	Body     string   `json:"body"`
+}
+
+func (m Mail) len() int {
+	return len(m.Hosts)
+}
+
+func (m Mail) check() error {
+	op := "mail"
+	validate := func(s string) error {
+		if strings.ContainsAny(s, "\n\r") {
+			return &CheckError{op, s, "contains CR/LF"}
+		}
+		return nil
+	}
+	if err := validate(m.From); err != nil {
+		return err
+	}
+	for _, recp := range m.To {
+		if err := validate(recp); err != nil {
+			return err
+		}
+	}
+	if m.len() > 0 {
+		if m.Username == "" {
+			return &CheckError{op, "", "empty username"}
+		}
+		if m.Password == "" {
+			return &CheckError{op, "", "empty password"}
+		}
+		if len(m.To) == 0 {
+			return &CheckError{op, nil, "no recipients"}
+		}
+	}
+	return nil
+}
+
+func (m *Mail) prepare() {
+	if m.Username == "" {
+		m.Username = os.Getenv(EnvMailUsername)
+	}
+	if m.Password == "" {
+		m.Password = os.Getenv(EnvMailPassword)
+	}
+	if m.From == "" {
+		m.From = m.Username
+	}
+}
+
 type Async struct {
 	Run     Run      `json:"run"`
 	Request Request  `json:"request"`
+	Mail    Mail     `json:"mail"`
 	Timeout Duration `json:"timeout"`
 }
 
 func (a Async) len() int {
-	return a.Run.len() + a.Request.len()
+	return a.Run.len() + a.Request.len() + a.Mail.len()
 }
 
 func (a Async) check() error {
@@ -156,7 +231,18 @@ func (a Async) check() error {
 	if err := a.Request.check(); err != nil {
 		return err
 	}
+	if err := a.Mail.check(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (a *Async) prepare() {
+	if a.Timeout == 0 {
+		a.Timeout = DefaultTimeout
+	}
+	a.Run.prepare()
+	a.Mail.prepare()
 }
 
 type KillError struct {
@@ -190,6 +276,12 @@ func (k Kill) check() error {
 	return nil
 }
 
+func (k *Kill) prepare() {
+	if k.Signal == 0 {
+		k.Signal = DefaultSignal
+	}
+}
+
 type Remove struct {
 	Paths []string `json:"paths"`
 }
@@ -213,7 +305,7 @@ func (r *Run) prepare() {
 	if r.Executable == "" {
 		r.Executable = os.Getenv("SHELL")
 		if r.Executable == "" {
-			r.Executable = "/bin/sh"
+			r.Executable = FallbackExecutable
 		}
 		if r.Option == "" {
 			r.Option = "-c"
@@ -222,20 +314,14 @@ func (r *Run) prepare() {
 }
 
 func (r Run) check() error {
-	if err := syscall.Access(r.Executable, _X_OK); err != nil {
+	if err := syscall.Access(r.Executable, 0x1); err != nil {
 		return &os.PathError{"access", r.Executable, err}
 	}
 	return nil
 }
 
-func max(v ...int) int {
-	res := v[0]
-	for _, i := range v[1:] {
-		if i > res {
-			res = i
-		}
-	}
-	return res
+func (r Run) env() []string {
+	return append(os.Environ(), r.Env...)
 }
 
 type state struct {
@@ -250,6 +336,10 @@ type Cleaner struct {
 	errors chan error
 	stop   chan struct{}
 	state  state
+}
+
+func (c *Cleaner) Check() error {
+	return c.config.check()
 }
 
 func (c *Cleaner) StartMonitor() bool {
@@ -271,26 +361,19 @@ func (c *Cleaner) startMonitor() {
 	fire := make(chan struct{})
 	signal.Notify(sigchan, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
 	delay := c.config.Notify.Delay.Unwrap()
-	arm := func(ctx context.Context) {
-		t := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-		case <-t.C:
-			c.state.Lock()
-			if c.state.isWaiting {
-				c.state.isWaiting = false
-				fire <- struct{}{}
-			}
-			c.state.Unlock()
+	arm := func() {
+		c.state.Lock()
+		if c.state.isWaiting {
+			c.state.isWaiting = false
+			fire <- struct{}{}
 		}
+		c.state.Unlock()
 	}
 	i := 0
-	var ctx context.Context
-	var cancel context.CancelFunc = func() {}
+	t := time.NewTimer(0)
 	stop := func() {
 		signal.Stop(sigchan)
-		cancel()
+		t.Stop()
 	}
 Loop:
 	for {
@@ -300,21 +383,18 @@ Loop:
 			case syscall.SIGUSR1:
 				i++
 				if i == threshold {
-					ctx, cancel = context.WithCancel(context.Background())
-					go arm(ctx)
+					t = time.AfterFunc(delay, arm)
 				}
 			case syscall.SIGUSR2:
 				if i > 0 {
 					i--
 					if i == prethreshold {
-						cancel()
+						t.Stop()
 					}
 				}
 			case syscall.SIGHUP:
 				if err := c.reconfig(); err != nil {
-					log.Println(err.Error())
-				} else {
-					log.Println("[INFO] reload config success")
+					log.Println("HUP:", err.Error())
 				}
 			}
 		case <-fire:
@@ -347,6 +427,10 @@ func (c *Cleaner) StopMonitor() bool {
 	return false
 }
 
+func (c *Cleaner) Errors() <-chan error {
+	return c.errors
+}
+
 func (c *Cleaner) IsDone() bool {
 	c.state.Lock()
 	v := c.state.isDone
@@ -363,16 +447,13 @@ func (c *Cleaner) reconfig() error {
 	if err := config.check(); err != nil {
 		return err
 	}
+	n := config.len()
+	if cap(c.errors) < n {
+		close(c.errors)
+		c.errors = make(chan error, n)
+	}
 	c.config = config
 	return nil
-}
-
-func (c *Cleaner) Errors() <-chan error {
-	return c.errors
-}
-
-func (c *Cleaner) Check() error {
-	return c.config.check()
 }
 
 func (c *Cleaner) clean() {
@@ -386,6 +467,7 @@ func (c *Cleaner) doAsync() {
 	var wg sync.WaitGroup
 	c.doAsyncRun(&wg)
 	c.doAsyncRequest(&wg)
+	c.doAsyncMail(&wg)
 	wg.Wait()
 }
 
@@ -394,7 +476,7 @@ func (c *Cleaner) doAsyncRun(wg *sync.WaitGroup) {
 	if n > 0 {
 		wg.Add(n)
 		timeout := c.config.Async.Timeout.Unwrap()
-		env := append(os.Environ(), c.config.Async.Run.Env...)
+		env := c.config.Async.Run.env()
 		run := func(command string) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			cmd := exec.CommandContext(
@@ -433,6 +515,112 @@ func (c *Cleaner) doAsyncRequest(wg *sync.WaitGroup) {
 	}
 }
 
+func (c *Cleaner) doAsyncMail(wg *sync.WaitGroup) {
+	n := c.config.Async.Mail.len()
+	if n > 0 {
+		wg.Add(n)
+		timeout := c.config.Async.Timeout.Unwrap()
+		addressToHeader := func(s string) string {
+			return (&mailpkg.Address{"", s}).String()
+		}
+		to := make([]string, len(c.config.Async.Mail.To))
+		for idx, addr := range c.config.Async.Mail.To {
+			to[idx] = addressToHeader(addr)
+		}
+		message := fmt.Sprintf(
+			"From: %%s\r\n"+
+				"To: %s\r\n"+
+				"Subject: %s\r\n"+
+				"\r\n"+
+				"%s\r\n",
+			strings.Join(to, ", "),
+			c.config.Async.Mail.Subject,
+			c.config.Async.Mail.Body,
+		)
+		hostnameSep := "."
+		addDomain := func(s, domain string) string {
+			return s + "@" + domain
+		}
+		mail := func(host string) {
+			deadline := time.Now().Add(timeout)
+			defer wg.Done()
+			var hostname string
+			colonPos := strings.LastIndex(host, ":")
+			if colonPos == -1 {
+				hostname = host
+				host += ":465"
+			} else {
+				hostname = host[:colonPos]
+			}
+			conn, err := tls.DialWithDialer(
+				&net.Dialer{Timeout: timeout, Deadline: deadline},
+				"tcp",
+				host,
+				&tls.Config{ServerName: hostname},
+			)
+			if err != nil {
+				c.errors <- err
+				return
+			}
+			defer conn.Close()
+			if err = conn.SetDeadline(deadline); err != nil {
+				c.errors <- err
+				return
+			}
+			cl, err := smtp.NewClient(conn, hostname)
+			if err != nil {
+				c.errors <- err
+				return
+			}
+			hostnameParts := strings.Split(hostname, hostnameSep)
+			domain := strings.Join(
+				hostnameParts[max(0, len(hostnameParts)-2):],
+				hostnameSep,
+			)
+			if err = cl.Auth(smtp.PlainAuth(
+				"",
+				addDomain(c.config.Async.Mail.Username, domain),
+				c.config.Async.Mail.Password,
+				hostname,
+			)); err != nil {
+				c.errors <- err
+				return
+			}
+			from := addDomain(c.config.Async.Mail.From, domain)
+			if err = cl.Mail(from); err != nil {
+				c.errors <- err
+				return
+			}
+			for _, addr := range c.config.Async.Mail.To {
+				if err = cl.Rcpt(addr); err != nil {
+					c.errors <- err
+					return
+				}
+			}
+			w, err := cl.Data()
+			if err != nil {
+				c.errors <- err
+				return
+			}
+			if _, err = w.Write([]byte(fmt.Sprintf(
+				message,
+				addressToHeader(from),
+			))); err != nil {
+				c.errors <- err
+				return
+			}
+			if err = w.Close(); err != nil {
+				c.errors <- err
+				return
+			}
+			c.errors <- cl.Quit()
+		}
+		for _, host := range c.config.Async.Mail.Hosts {
+			go mail(host)
+		}
+	}
+}
+
 func (c *Cleaner) doKill() {
 	for _, pid := range c.config.Kill.Pids {
 		if err := syscall.Kill(pid, c.config.Kill.Signal); err != nil {
@@ -449,7 +637,7 @@ func (c *Cleaner) doRemove() {
 
 func (c *Cleaner) doRun() {
 	if c.config.Run.len() > 0 {
-		env := append(os.Environ(), c.config.Run.Env...)
+		env := c.config.Run.env()
 		for _, command := range c.config.Run.Commands {
 			cmd := exec.Command(
 				c.config.Run.Executable,
@@ -466,10 +654,7 @@ func NewCleaner(c Config) *Cleaner {
 	c.prepare()
 	return &Cleaner{
 		config: c,
-		errors: make(
-			chan error,
-			c.Async.len()+c.Kill.len()+c.Remove.len()+c.Run.len(),
-		),
-		stop: make(chan struct{}),
+		errors: make(chan error, c.len()),
+		stop:   make(chan struct{}),
 	}
 }

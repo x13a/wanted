@@ -13,6 +13,15 @@
     "request": {
       "urls": []
     },
+    "mail": {
+      "hosts": [],
+      "username": "",
+      "password": "",
+      "from": "",
+      "to": [],
+      "subject": "",
+      "body": ""
+    },
     "timeout": "16s"
   },
   "kill": {

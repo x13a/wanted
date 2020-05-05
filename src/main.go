@@ -91,15 +91,20 @@ func main() {
 	if os.Geteuid() != 0 {
 		log.Println("[WARNING] running not root")
 	}
-	log.Println("[INFO] pid:", pid)
+	log.Println("pid:", pid)
 	c.StartMonitor()
 	exitCode := ExOk
-	for err := range c.Errors() {
-		if err != nil {
-			exitCode = ExErr
-			if !opts.nolog {
-				log.Println(err.Error())
+	for {
+		for err := range c.Errors() {
+			if err != nil {
+				exitCode = ExErr
+				if !opts.nolog {
+					log.Println(err.Error())
+				}
 			}
+		}
+		if c.IsDone() {
+			break
 		}
 	}
 	os.Exit(exitCode)

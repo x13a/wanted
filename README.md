@@ -1,6 +1,24 @@
 # cleaner
 
-Description
+Run predefined tasks on signal receive.
+
+Listen for signals:
+- *USR1* to increment counter
+- *USR2* to decrement counter
+- *HUP*  to hot reload config
+
+When counter equals threshold, run "arm" goroutine which waits for delay, 
+if while this delay counter become below threshold stop "arm" goroutine, 
+else do cleanup and exit. While waiting for "fire" config can be hot reloaded.
+
+Cleanup order:
+- *Async* (*Run*, *Request*, *Mail*)
+- *Kill*
+- *Remove*
+- *Run*
+
+All *async* tasks has timeout, default to 16s, and run in parallel.
+Run is a list of shell commands, by default prefixed with `$SHELL -c`.
 
 ## Installation
 ```sh
