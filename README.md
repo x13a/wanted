@@ -42,7 +42,7 @@ Usage of cleaner:
   -h	Print help and exit
   -n	Do not log clean errors
   -p string
-    	Write pid file
+    	Write pid to file
   -r	Remove configuration file
 ```
 
