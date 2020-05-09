@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	Version = "0.0.5"
+	Version = "0.0.6"
 
 	EnvMailUsername = "CLEANER_MAIL_USERNAME"
 	EnvMailPassword = "CLEANER_MAIL_PASSWORD"

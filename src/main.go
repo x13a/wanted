@@ -37,7 +37,7 @@ func parseArgs() *Opts {
 	isVersion := flag.Bool("V", false, "Print version and exit")
 	flag.Var(&opts.check, FlagCheck, "Check configuration file and exit")
 	flag.Var(&opts.config, FlagConfig, "Path to configuration file")
-	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid file")
+	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid to file")
 	flag.BoolVar(&opts.remove, FlagRemove, false, "Remove configuration file")
 	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log clean errors")
 	flag.Parse()
@@ -105,6 +105,11 @@ func main() {
 		}
 		if c.IsDone() {
 			break
+		}
+	}
+	if opts.pidfile != "" {
+		if err := os.Remove(opts.pidfile); err != nil {
+			log.Println(err.Error())
 		}
 	}
 	os.Exit(exitCode)
