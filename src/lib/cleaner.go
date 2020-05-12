@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	mailpkg "net/mail"
@@ -14,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,7 +25,7 @@ import (
 )
 
 const (
-	Version = "0.0.6"
+	Version = "0.0.7"
 
 	EnvMailUsername = "CLEANER_MAIL_USERNAME"
 	EnvMailPassword = "CLEANER_MAIL_PASSWORD"
@@ -79,6 +83,10 @@ func (c Config) len() int {
 	return c.Async.len() + c.Kill.len() + c.Remove.len() + c.Run.len()
 }
 
+func (c Config) errorsCap() int {
+	return c.len() + len(c.Async.Request.Files)*c.Async.Request.len()
+}
+
 func (c *Config) check() error {
 	if err := c.Async.check(); err != nil {
 		return err
@@ -133,7 +141,8 @@ func (e *CheckError) Error() string {
 }
 
 type Request struct {
-	Urls []string `json:"urls"`
+	Urls  []string `json:"urls"`
+	Files []string `json:"files"`
 }
 
 func (r Request) len() int {
@@ -251,7 +260,7 @@ type KillError struct {
 }
 
 func (e *KillError) Error() string {
-	return fmt.Sprintf("%s: %d", e.Err.Error(), e.Pid)
+	return e.Err.Error() + ": " + strconv.Itoa(e.Pid)
 }
 
 func (e *KillError) Unwrap() error {
@@ -447,7 +456,7 @@ func (c *Cleaner) reconfig() error {
 	if err := config.check(); err != nil {
 		return err
 	}
-	n := config.len()
+	n := config.errorsCap()
 	if cap(c.errors) < n {
 		close(c.errors)
 		c.errors = make(chan error, n)
@@ -501,11 +510,21 @@ func (c *Cleaner) doAsyncRequest(wg *sync.WaitGroup) {
 	if n > 0 {
 		wg.Add(n)
 		httpClient := &http.Client{Timeout: c.config.Async.Timeout.Unwrap()}
+		hasFiles := len(c.config.Async.Request.Files) > 0
 		request := func(url string) {
-			if resp, err := httpClient.Get(url); err == nil {
-				resp.Body.Close()
+			if hasFiles {
+				postFiles(
+					httpClient,
+					url,
+					c.config.Async.Request.Files,
+					c.errors,
+				)
 			} else {
-				c.errors <- err
+				if resp, err := httpClient.Get(url); err != nil {
+					c.errors <- err
+				} else {
+					resp.Body.Close()
+				}
 			}
 			wg.Done()
 		}
@@ -654,7 +673,52 @@ func NewCleaner(c Config) *Cleaner {
 	c.prepare()
 	return &Cleaner{
 		config: c,
-		errors: make(chan error, c.len()),
+		errors: make(chan error, c.errorsCap()),
 		stop:   make(chan struct{}),
 	}
+}
+
+func postFiles(
+	client *http.Client,
+	url string,
+	files []string,
+	errors chan<- error,
+) {
+	r, w := io.Pipe()
+	m := multipart.NewWriter(w)
+	errs := make(chan error, 1)
+	go func() {
+		defer w.Close()
+		upload := func(index int, filePath string) error {
+			file, err := os.Open(filePath)
+			if err != nil {
+				errors <- err
+				return nil
+			}
+			defer file.Close()
+			part, err := m.CreateFormFile(
+				"file"+strconv.Itoa(index),
+				filepath.Base(file.Name()),
+			)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(part, file)
+			return err
+		}
+		for idx, filePath := range files {
+			if err := upload(idx, filePath); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- m.Close()
+	}()
+	if resp, err := client.Post(url, m.FormDataContentType(), r); err != nil {
+		errors <- err
+	} else {
+		resp.Body.Close()
+		errors <- (<-errs)
+	}
+	r.Close()
 }

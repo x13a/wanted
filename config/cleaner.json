@@ -11,7 +11,8 @@
       "option": "-c"
     },
     "request": {
-      "urls": []
+      "urls": [],
+      "files": []
     },
     "mail": {
       "hosts": [],
