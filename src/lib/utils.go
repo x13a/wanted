@@ -1,4 +1,4 @@
-package cleaner
+package wanted
 
 func max(v ...int) int {
 	res := v[0]

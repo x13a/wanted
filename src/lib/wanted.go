@@ -1,4 +1,4 @@
-package cleaner
+package wanted
 
 import (
 	"context"
@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	Version = "0.0.7"
+	Version = "0.0.8"
 
-	EnvMailUsername = "CLEANER_MAIL_USERNAME"
-	EnvMailPassword = "CLEANER_MAIL_PASSWORD"
+	envPrefix       = "WANTED_"
+	EnvMailUsername = envPrefix + "MAIL_USERNAME"
+	EnvMailPassword = envPrefix + "MAIL_PASSWORD"
 
 	DefaultTimeout     = Duration(1 << 4 * time.Second)
 	DefaultSignal      = syscall.SIGKILL
@@ -340,43 +341,43 @@ type state struct {
 	isDone    bool
 }
 
-type Cleaner struct {
+type Wanted struct {
 	config Config
 	errors chan error
 	stop   chan struct{}
 	state  state
 }
 
-func (c *Cleaner) Check() error {
-	return c.config.check()
+func (w *Wanted) Check() error {
+	return w.config.check()
 }
 
-func (c *Cleaner) StartMonitor() bool {
-	c.state.Lock()
-	defer c.state.Unlock()
-	if !c.state.isRunning && !c.state.isDone {
-		c.state.isRunning = true
-		c.state.isWaiting = true
-		go c.startMonitor()
+func (w *Wanted) StartMonitor() bool {
+	w.state.Lock()
+	defer w.state.Unlock()
+	if !w.state.isRunning && !w.state.isDone {
+		w.state.isRunning = true
+		w.state.isWaiting = true
+		go w.startMonitor()
 		return true
 	}
 	return false
 }
 
-func (c *Cleaner) startMonitor() {
-	threshold := max(1, c.config.Notify.Threshold)
+func (w *Wanted) startMonitor() {
+	threshold := max(1, w.config.Notify.Threshold)
 	prethreshold := threshold - 1
 	sigchan := make(chan os.Signal, threshold*2+1)
 	fire := make(chan struct{})
 	signal.Notify(sigchan, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
-	delay := c.config.Notify.Delay.Unwrap()
+	delay := w.config.Notify.Delay.Unwrap()
 	arm := func() {
-		c.state.Lock()
-		if c.state.isWaiting {
-			c.state.isWaiting = false
+		w.state.Lock()
+		if w.state.isWaiting {
+			w.state.isWaiting = false
 			fire <- struct{}{}
 		}
-		c.state.Unlock()
+		w.state.Unlock()
 	}
 	i := 0
 	t := time.NewTimer(0)
@@ -402,54 +403,54 @@ Loop:
 					}
 				}
 			case syscall.SIGHUP:
-				if err := c.reconfig(); err != nil {
+				if err := w.reconfig(); err != nil {
 					log.Println("HUP:", err.Error())
 				}
 			}
 		case <-fire:
 			stop()
 			break Loop
-		case <-c.stop:
+		case <-w.stop:
 			stop()
-			c.state.Lock()
-			c.state.isRunning = false
-			c.state.Unlock()
+			w.state.Lock()
+			w.state.isRunning = false
+			w.state.Unlock()
 			return
 		}
 	}
-	c.clean()
-	close(c.errors)
-	c.state.Lock()
-	c.state.isDone = true
-	c.state.isRunning = false
-	c.state.Unlock()
+	w.clean()
+	close(w.errors)
+	w.state.Lock()
+	w.state.isDone = true
+	w.state.isRunning = false
+	w.state.Unlock()
 }
 
-func (c *Cleaner) StopMonitor() bool {
-	c.state.Lock()
-	defer c.state.Unlock()
-	if c.state.isWaiting {
-		c.state.isWaiting = false
-		c.stop <- struct{}{}
+func (w *Wanted) StopMonitor() bool {
+	w.state.Lock()
+	defer w.state.Unlock()
+	if w.state.isWaiting {
+		w.state.isWaiting = false
+		w.stop <- struct{}{}
 		return true
 	}
 	return false
 }
 
-func (c *Cleaner) Errors() <-chan error {
-	return c.errors
+func (w *Wanted) Errors() <-chan error {
+	return w.errors
 }
 
-func (c *Cleaner) IsDone() bool {
-	c.state.Lock()
-	v := c.state.isDone
-	c.state.Unlock()
+func (w *Wanted) IsDone() bool {
+	w.state.Lock()
+	v := w.state.isDone
+	w.state.Unlock()
 	return v
 }
 
-func (c *Cleaner) reconfig() error {
+func (w *Wanted) reconfig() error {
 	var config Config
-	if err := config.Set(c.config.path); err != nil {
+	if err := config.Set(w.config.path); err != nil {
 		return err
 	}
 	config.prepare()
@@ -457,93 +458,93 @@ func (c *Cleaner) reconfig() error {
 		return err
 	}
 	n := config.errorsCap()
-	if cap(c.errors) < n {
-		close(c.errors)
-		c.errors = make(chan error, n)
+	if cap(w.errors) < n {
+		close(w.errors)
+		w.errors = make(chan error, n)
 	}
-	c.config = config
+	w.config = config
 	return nil
 }
 
-func (c *Cleaner) clean() {
-	c.doAsync()
-	c.doKill()
-	c.doRemove()
-	c.doRun()
+func (w *Wanted) clean() {
+	w.doAsync()
+	w.doKill()
+	w.doRemove()
+	w.doRun()
 }
 
-func (c *Cleaner) doAsync() {
+func (w *Wanted) doAsync() {
 	var wg sync.WaitGroup
-	c.doAsyncRun(&wg)
-	c.doAsyncRequest(&wg)
-	c.doAsyncMail(&wg)
+	w.doAsyncRun(&wg)
+	w.doAsyncRequest(&wg)
+	w.doAsyncMail(&wg)
 	wg.Wait()
 }
 
-func (c *Cleaner) doAsyncRun(wg *sync.WaitGroup) {
-	n := c.config.Async.Run.len()
+func (w *Wanted) doAsyncRun(wg *sync.WaitGroup) {
+	n := w.config.Async.Run.len()
 	if n > 0 {
 		wg.Add(n)
-		timeout := c.config.Async.Timeout.Unwrap()
-		env := c.config.Async.Run.env()
+		timeout := w.config.Async.Timeout.Unwrap()
+		env := w.config.Async.Run.env()
 		run := func(command string) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			cmd := exec.CommandContext(
 				ctx,
-				c.config.Async.Run.Executable,
-				c.config.Async.Run.Option,
+				w.config.Async.Run.Executable,
+				w.config.Async.Run.Option,
 				command,
 			)
 			cmd.Env = env
-			c.errors <- cmd.Run()
+			w.errors <- cmd.Run()
 			cancel()
 			wg.Done()
 		}
-		for _, command := range c.config.Async.Run.Commands {
+		for _, command := range w.config.Async.Run.Commands {
 			go run(command)
 		}
 	}
 }
 
-func (c *Cleaner) doAsyncRequest(wg *sync.WaitGroup) {
-	n := c.config.Async.Request.len()
+func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
+	n := w.config.Async.Request.len()
 	if n > 0 {
 		wg.Add(n)
-		httpClient := &http.Client{Timeout: c.config.Async.Timeout.Unwrap()}
-		hasFiles := len(c.config.Async.Request.Files) > 0
+		httpClient := &http.Client{Timeout: w.config.Async.Timeout.Unwrap()}
+		hasFiles := len(w.config.Async.Request.Files) > 0
 		request := func(url string) {
 			if hasFiles {
 				postFiles(
 					httpClient,
 					url,
-					c.config.Async.Request.Files,
-					c.errors,
+					w.config.Async.Request.Files,
+					w.errors,
 				)
 			} else {
 				if resp, err := httpClient.Get(url); err != nil {
-					c.errors <- err
+					w.errors <- err
 				} else {
 					resp.Body.Close()
 				}
 			}
 			wg.Done()
 		}
-		for _, url := range c.config.Async.Request.Urls {
+		for _, url := range w.config.Async.Request.Urls {
 			go request(url)
 		}
 	}
 }
 
-func (c *Cleaner) doAsyncMail(wg *sync.WaitGroup) {
-	n := c.config.Async.Mail.len()
+func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
+	n := w.config.Async.Mail.len()
 	if n > 0 {
 		wg.Add(n)
-		timeout := c.config.Async.Timeout.Unwrap()
+		timeout := w.config.Async.Timeout.Unwrap()
 		addressToHeader := func(s string) string {
 			return (&mailpkg.Address{"", s}).String()
 		}
-		to := make([]string, len(c.config.Async.Mail.To))
-		for idx, addr := range c.config.Async.Mail.To {
+		to := make([]string, len(w.config.Async.Mail.To))
+		for idx, addr := range w.config.Async.Mail.To {
 			to[idx] = addressToHeader(addr)
 		}
 		message := fmt.Sprintf(
@@ -553,8 +554,8 @@ func (c *Cleaner) doAsyncMail(wg *sync.WaitGroup) {
 				"\r\n"+
 				"%s\r\n",
 			strings.Join(to, ", "),
-			c.config.Async.Mail.Subject,
-			c.config.Async.Mail.Body,
+			w.config.Async.Mail.Subject,
+			w.config.Async.Mail.Body,
 		)
 		hostnameSep := "."
 		addDomain := func(s, domain string) string {
@@ -578,17 +579,17 @@ func (c *Cleaner) doAsyncMail(wg *sync.WaitGroup) {
 				&tls.Config{ServerName: hostname},
 			)
 			if err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
 			defer conn.Close()
 			if err = conn.SetDeadline(deadline); err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
 			cl, err := smtp.NewClient(conn, hostname)
 			if err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
 			hostnameParts := strings.Split(hostname, hostnameSep)
@@ -598,80 +599,80 @@ func (c *Cleaner) doAsyncMail(wg *sync.WaitGroup) {
 			)
 			if err = cl.Auth(smtp.PlainAuth(
 				"",
-				addDomain(c.config.Async.Mail.Username, domain),
-				c.config.Async.Mail.Password,
+				addDomain(w.config.Async.Mail.Username, domain),
+				w.config.Async.Mail.Password,
 				hostname,
 			)); err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
-			from := addDomain(c.config.Async.Mail.From, domain)
+			from := addDomain(w.config.Async.Mail.From, domain)
 			if err = cl.Mail(from); err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
-			for _, addr := range c.config.Async.Mail.To {
+			for _, addr := range w.config.Async.Mail.To {
 				if err = cl.Rcpt(addr); err != nil {
-					c.errors <- err
+					w.errors <- err
 					return
 				}
 			}
-			w, err := cl.Data()
+			wc, err := cl.Data()
 			if err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
-			if _, err = w.Write([]byte(fmt.Sprintf(
+			if _, err = wc.Write([]byte(fmt.Sprintf(
 				message,
 				addressToHeader(from),
 			))); err != nil {
-				c.errors <- err
+				w.errors <- err
 				return
 			}
-			if err = w.Close(); err != nil {
-				c.errors <- err
+			if err = wc.Close(); err != nil {
+				w.errors <- err
 				return
 			}
-			c.errors <- cl.Quit()
+			w.errors <- cl.Quit()
 		}
-		for _, host := range c.config.Async.Mail.Hosts {
+		for _, host := range w.config.Async.Mail.Hosts {
 			go mail(host)
 		}
 	}
 }
 
-func (c *Cleaner) doKill() {
-	for _, pid := range c.config.Kill.Pids {
-		if err := syscall.Kill(pid, c.config.Kill.Signal); err != nil {
-			c.errors <- &KillError{pid, err}
+func (w *Wanted) doKill() {
+	for _, pid := range w.config.Kill.Pids {
+		if err := syscall.Kill(pid, w.config.Kill.Signal); err != nil {
+			w.errors <- &KillError{pid, err}
 		}
 	}
 }
 
-func (c *Cleaner) doRemove() {
-	for _, path := range c.config.Remove.Paths {
-		c.errors <- os.RemoveAll(path)
+func (w *Wanted) doRemove() {
+	for _, path := range w.config.Remove.Paths {
+		w.errors <- os.RemoveAll(path)
 	}
 }
 
-func (c *Cleaner) doRun() {
-	if c.config.Run.len() > 0 {
-		env := c.config.Run.env()
-		for _, command := range c.config.Run.Commands {
+func (w *Wanted) doRun() {
+	if w.config.Run.len() > 0 {
+		env := w.config.Run.env()
+		for _, command := range w.config.Run.Commands {
 			cmd := exec.Command(
-				c.config.Run.Executable,
-				c.config.Run.Option,
+				w.config.Run.Executable,
+				w.config.Run.Option,
 				command,
 			)
 			cmd.Env = env
-			c.errors <- cmd.Run()
+			w.errors <- cmd.Run()
 		}
 	}
 }
 
-func NewCleaner(c Config) *Cleaner {
+func NewWanted(c Config) *Wanted {
 	c.prepare()
-	return &Cleaner{
+	return &Wanted{
 		config: c,
 		errors: make(chan error, c.errorsCap()),
 		stop:   make(chan struct{}),

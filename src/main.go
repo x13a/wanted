@@ -8,7 +8,7 @@ import (
 	"os"
 	"strconv"
 
-	cleaner "./lib"
+	wanted "./lib"
 )
 
 const (
@@ -24,8 +24,8 @@ const (
 )
 
 type Opts struct {
-	check   cleaner.Config
-	config  cleaner.Config
+	check   wanted.Config
+	config  wanted.Config
 	pidfile string
 	remove  bool
 	nolog   bool
@@ -46,7 +46,7 @@ func parseArgs() *Opts {
 		os.Exit(ExOk)
 	}
 	if *isVersion {
-		fmt.Println(cleaner.Version)
+		fmt.Println(wanted.Version)
 		os.Exit(ExOk)
 	}
 	if opts.check.Path() != "" {
@@ -65,8 +65,8 @@ func parseArgs() *Opts {
 
 func main() {
 	opts := parseArgs()
-	c := cleaner.NewCleaner(opts.config)
-	if err := c.Check(); err != nil {
+	w := wanted.NewWanted(opts.config)
+	if err := w.Check(); err != nil {
 		log.Fatalln(err.Error())
 	} else if opts.check.Path() != "" {
 		os.Exit(ExOk)
@@ -82,7 +82,7 @@ func main() {
 		}
 	}
 	if opts.remove {
-		if path := opts.config.Path(); path != cleaner.ArgStdin {
+		if path := opts.config.Path(); path != wanted.ArgStdin {
 			if err := os.Remove(path); err != nil {
 				log.Fatalln(err.Error())
 			}
@@ -92,10 +92,10 @@ func main() {
 		log.Println("[WARNING] running not root")
 	}
 	log.Println("pid:", pid)
-	c.StartMonitor()
+	w.StartMonitor()
 	exitCode := ExOk
 	for {
-		for err := range c.Errors() {
+		for err := range w.Errors() {
 			if err != nil {
 				exitCode = ExErr
 				if !opts.nolog {
@@ -103,7 +103,7 @@ func main() {
 				}
 			}
 		}
-		if c.IsDone() {
+		if w.IsDone() {
 			break
 		}
 	}

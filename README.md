@@ -1,4 +1,4 @@
-# cleaner
+# wanted
 
 Run predefined tasks on signal receive.
 
@@ -28,12 +28,12 @@ $ make install
 or
 ```sh
 $ brew tap x31a/tap https://bitbucket.org/x31a/homebrew-tap.git
-$ brew install x31a/tap/cleaner
+$ brew install x31a/tap/wanted
 ```
 
 ## Usage
 ```text
-Usage of cleaner:
+Usage of wanted:
   -C value
     	Check configuration file and exit
   -V	Print version and exit
@@ -50,10 +50,10 @@ Usage of cleaner:
 
 To check config and exit:
 ```sh
-$ cleaner -C ~/cleaner.json
+$ wanted -C ~/wanted.json
 ```
 
 To default run:
 ```sh
-$ cleaner -c ~/cleaner.json
+$ wanted -c ~/wanted.json
 ```

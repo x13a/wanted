@@ -1,6 +1,6 @@
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
-NAME := cleaner
+NAME := wanted
 TARGET_DIR := ./target
 TARGET := $(TARGET_DIR)/$(NAME)
 
