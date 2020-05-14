@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	Version = "0.0.8"
+	Version = "0.0.9"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
@@ -141,6 +141,60 @@ func (e *CheckError) Error() string {
 	return fmt.Sprintf("%s > %s: %v", e.Op, e.Description, e.Value)
 }
 
+func readDirFilePaths(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	flist, err := f.Readdir(-1)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, len(flist))
+	i := 0
+	for _, fi := range flist {
+		if fi.IsDir() {
+			continue
+		}
+		name := fi.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		files[i] = filepath.Join(path, name)
+		i++
+	}
+	return files, nil
+}
+
+func extendDirFiles(v []string) []string {
+	f := func(path string) ([]string, error) {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if fi.IsDir() {
+			flist, err := readDirFilePaths(path)
+			if err != nil {
+				return nil, err
+			}
+			return flist, nil
+		} else {
+			return []string{path}, nil
+		}
+	}
+	var files []string
+	for _, path := range v {
+		if res, err := f(path); err != nil {
+			files = append(files, path)
+		} else {
+			files = append(files, res...)
+		}
+
+	}
+	return files
+}
+
 type Request struct {
 	Urls  []string `json:"urls"`
 	Files []string `json:"files"`
@@ -165,6 +219,12 @@ func (r Request) check() error {
 		}
 	}
 	return nil
+}
+
+func (r *Request) prepare() {
+	if len(r.Files) > 0 {
+		r.Files = extendDirFiles(r.Files)
+	}
 }
 
 type Mail struct {
@@ -252,6 +312,7 @@ func (a *Async) prepare() {
 		a.Timeout = DefaultTimeout
 	}
 	a.Run.prepare()
+	a.Request.prepare()
 	a.Mail.prepare()
 }
 
