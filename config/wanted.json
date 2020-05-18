@@ -21,7 +21,8 @@
       "from": "",
       "to": [],
       "subject": "",
-      "body": ""
+      "body": "",
+      "files": []
     },
     "timeout": "16s"
   },

@@ -2,15 +2,11 @@ package wanted
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"log"
-	"mime/multipart"
-	"net"
 	"net/http"
-	mailpkg "net/mail"
 	"net/smtp"
 	urlpkg "net/url"
 	"os"
@@ -25,7 +21,7 @@ import (
 )
 
 const (
-	Version = "0.0.9"
+	Version = "0.0.10"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
@@ -85,7 +81,8 @@ func (c Config) len() int {
 }
 
 func (c Config) errorsCap() int {
-	return c.len() + len(c.Async.Request.Files)*c.Async.Request.len()
+	return c.len() + len(c.Async.Request.Files)*c.Async.Request.len() +
+		len(c.Async.Mail.Files)
 }
 
 func (c *Config) check() error {
@@ -141,56 +138,28 @@ func (e *CheckError) Error() string {
 	return fmt.Sprintf("%s > %s: %v", e.Op, e.Description, e.Value)
 }
 
-func readDirFilePaths(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	flist, err := f.Readdir(-1)
-	f.Close()
-	if err != nil {
-		return nil, err
-	}
-	files := make([]string, len(flist))
-	i := 0
-	for _, fi := range flist {
-		if fi.IsDir() {
-			continue
-		}
-		name := fi.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		files[i] = filepath.Join(path, name)
-		i++
-	}
-	return files, nil
-}
-
 func extendDirFiles(v []string) []string {
-	f := func(path string) ([]string, error) {
-		fi, err := os.Stat(path)
-		if err != nil {
-			return nil, err
-		}
-		if fi.IsDir() {
-			flist, err := readDirFilePaths(path)
-			if err != nil {
-				return nil, err
-			}
-			return flist, nil
-		} else {
-			return []string{path}, nil
-		}
-	}
-	var files []string
+	files := make([]string, 0, len(v))
 	for _, path := range v {
-		if res, err := f(path); err != nil {
+		fi, err := os.Stat(path)
+		if err != nil || !fi.IsDir() {
 			files = append(files, path)
-		} else {
-			files = append(files, res...)
+			continue
 		}
-
+		flist, err := ioutil.ReadDir(path)
+		if err != nil {
+			continue
+		}
+		for _, fi = range flist {
+			if fi.IsDir() {
+				continue
+			}
+			name := fi.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			files = append(files, filepath.Join(path, name))
+		}
 	}
 	return files
 }
@@ -235,6 +204,7 @@ type Mail struct {
 	To       []string `json:"to"`
 	Subject  string   `json:"subject"`
 	Body     string   `json:"body"`
+	Files    []string `json:"files"`
 }
 
 func (m Mail) len() int {
@@ -244,7 +214,7 @@ func (m Mail) len() int {
 func (m Mail) check() error {
 	op := "mail"
 	validate := func(s string) error {
-		if strings.ContainsAny(s, "\n\r") {
+		if strings.ContainsAny(s, emailNewLine) {
 			return &CheckError{op, s, "contains CR/LF"}
 		}
 		return nil
@@ -252,10 +222,13 @@ func (m Mail) check() error {
 	if err := validate(m.From); err != nil {
 		return err
 	}
-	for _, recp := range m.To {
-		if err := validate(recp); err != nil {
+	for _, rcpt := range m.To {
+		if err := validate(rcpt); err != nil {
 			return err
 		}
+	}
+	if err := validate(m.Subject); err != nil {
+		return err
 	}
 	if m.len() > 0 {
 		if m.Username == "" {
@@ -280,6 +253,9 @@ func (m *Mail) prepare() {
 	}
 	if m.From == "" {
 		m.From = m.Username
+	}
+	if len(m.Files) > 0 {
+		m.Files = extendDirFiles(m.Files)
 	}
 }
 
@@ -465,7 +441,7 @@ Loop:
 				}
 			case syscall.SIGHUP:
 				if err := w.reconfig(); err != nil {
-					log.Println("HUP:", err.Error())
+					log.Println("HUP:", err)
 				}
 			}
 		case <-fire:
@@ -580,6 +556,7 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 					url,
 					w.config.Async.Request.Files,
 					w.errors,
+					true,
 				)
 			} else {
 				if resp, err := httpClient.Get(url); err != nil {
@@ -600,101 +577,49 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 	n := w.config.Async.Mail.len()
 	if n > 0 {
 		wg.Add(n)
+		isMultihost := n > 1
 		timeout := w.config.Async.Timeout.Unwrap()
-		addressToHeader := func(s string) string {
-			return (&mailpkg.Address{"", s}).String()
+		msg := emailMessage{}
+		for _, to := range w.config.Async.Mail.To {
+			msg.AddTo("", to)
 		}
-		to := make([]string, len(w.config.Async.Mail.To))
-		for idx, addr := range w.config.Async.Mail.To {
-			to[idx] = addressToHeader(addr)
+		msg.Subject = w.config.Async.Mail.Subject
+		msg.Body = w.config.Async.Mail.Body
+		for _, filePath := range w.config.Async.Mail.Files {
+			if err := msg.AddAttachment(filePath); err != nil {
+				w.errors <- err
+			}
 		}
-		message := fmt.Sprintf(
-			"From: %%s\r\n"+
-				"To: %s\r\n"+
-				"Subject: %s\r\n"+
-				"\r\n"+
-				"%s\r\n",
-			strings.Join(to, ", "),
-			w.config.Async.Mail.Subject,
-			w.config.Async.Mail.Body,
-		)
-		hostnameSep := "."
 		addDomain := func(s, domain string) string {
 			return s + "@" + domain
 		}
 		mail := func(host string) {
 			deadline := time.Now().Add(timeout)
-			defer wg.Done()
-			var hostname string
-			colonPos := strings.LastIndex(host, ":")
-			if colonPos == -1 {
-				hostname = host
-				host += ":465"
-			} else {
-				hostname = host[:colonPos]
+			msg1 := msg
+			from := w.config.Async.Mail.From
+			username := w.config.Async.Mail.Username
+			hostname := getHostnameFromHost(host)
+			if isMultihost {
+				domain := getDomainFromHostname(hostname)
+				from = addDomain(from, domain)
+				username = addDomain(username, domain)
 			}
-			conn, err := tls.DialWithDialer(
-				&net.Dialer{Timeout: timeout, Deadline: deadline},
-				"tcp",
+			msg1.SetFrom("", from)
+			if err := sendMailTLS(
 				host,
-				&tls.Config{ServerName: hostname},
-			)
-			if err != nil {
+				smtp.PlainAuth(
+					"",
+					username,
+					w.config.Async.Mail.Password,
+					hostname,
+				),
+				&msg1,
+				timeout,
+				deadline,
+			); err != nil {
 				w.errors <- err
-				return
 			}
-			defer conn.Close()
-			if err = conn.SetDeadline(deadline); err != nil {
-				w.errors <- err
-				return
-			}
-			cl, err := smtp.NewClient(conn, hostname)
-			if err != nil {
-				w.errors <- err
-				return
-			}
-			hostnameParts := strings.Split(hostname, hostnameSep)
-			domain := strings.Join(
-				hostnameParts[max(0, len(hostnameParts)-2):],
-				hostnameSep,
-			)
-			if err = cl.Auth(smtp.PlainAuth(
-				"",
-				addDomain(w.config.Async.Mail.Username, domain),
-				w.config.Async.Mail.Password,
-				hostname,
-			)); err != nil {
-				w.errors <- err
-				return
-			}
-			from := addDomain(w.config.Async.Mail.From, domain)
-			if err = cl.Mail(from); err != nil {
-				w.errors <- err
-				return
-			}
-			for _, addr := range w.config.Async.Mail.To {
-				if err = cl.Rcpt(addr); err != nil {
-					w.errors <- err
-					return
-				}
-			}
-			wc, err := cl.Data()
-			if err != nil {
-				w.errors <- err
-				return
-			}
-			if _, err = wc.Write([]byte(fmt.Sprintf(
-				message,
-				addressToHeader(from),
-			))); err != nil {
-				w.errors <- err
-				return
-			}
-			if err = wc.Close(); err != nil {
-				w.errors <- err
-				return
-			}
-			w.errors <- cl.Quit()
+			wg.Done()
 		}
 		for _, host := range w.config.Async.Mail.Hosts {
 			go mail(host)
@@ -738,49 +663,4 @@ func NewWanted(c Config) *Wanted {
 		errors: make(chan error, c.errorsCap()),
 		stop:   make(chan struct{}),
 	}
-}
-
-func postFiles(
-	client *http.Client,
-	url string,
-	files []string,
-	errors chan<- error,
-) {
-	r, w := io.Pipe()
-	m := multipart.NewWriter(w)
-	errs := make(chan error, 1)
-	go func() {
-		defer w.Close()
-		upload := func(index int, filePath string) error {
-			file, err := os.Open(filePath)
-			if err != nil {
-				errors <- err
-				return nil
-			}
-			defer file.Close()
-			part, err := m.CreateFormFile(
-				"file"+strconv.Itoa(index),
-				filepath.Base(file.Name()),
-			)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(part, file)
-			return err
-		}
-		for idx, filePath := range files {
-			if err := upload(idx, filePath); err != nil {
-				errs <- err
-				return
-			}
-		}
-		errs <- m.Close()
-	}()
-	if resp, err := client.Post(url, m.FormDataContentType(), r); err != nil {
-		errors <- err
-	} else {
-		resp.Body.Close()
-		errors <- (<-errs)
-	}
-	r.Close()
 }

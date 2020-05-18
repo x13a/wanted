@@ -67,7 +67,7 @@ func main() {
 	opts := parseArgs()
 	w := wanted.NewWanted(opts.config)
 	if err := w.Check(); err != nil {
-		log.Fatalln(err.Error())
+		log.Fatalln(err)
 	} else if opts.check.Path() != "" {
 		os.Exit(ExOk)
 	}
@@ -78,13 +78,13 @@ func main() {
 			[]byte(strconv.Itoa(pid)),
 			0644,
 		); err != nil {
-			log.Fatalln(err.Error())
+			log.Fatalln(err)
 		}
 	}
 	if opts.remove {
 		if path := opts.config.Path(); path != wanted.ArgStdin {
 			if err := os.Remove(path); err != nil {
-				log.Fatalln(err.Error())
+				log.Fatalln(err)
 			}
 		}
 	}
@@ -99,7 +99,7 @@ func main() {
 			if err != nil {
 				exitCode = ExErr
 				if !opts.nolog {
-					log.Println(err.Error())
+					log.Println(err)
 				}
 			}
 		}
@@ -109,7 +109,7 @@ func main() {
 	}
 	if opts.pidfile != "" {
 		if err := os.Remove(opts.pidfile); err != nil {
-			log.Println(err.Error())
+			log.Println(err)
 		}
 	}
 	os.Exit(exitCode)
