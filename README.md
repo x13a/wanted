@@ -50,10 +50,10 @@ Usage of wanted:
 
 To check config and exit:
 ```sh
-$ wanted -C ~/wanted.json
+$ wanted -C /usr/local/etc/wanted.json
 ```
 
 To default run:
 ```sh
-$ wanted -c ~/wanted.json
+$ wanted -c /usr/local/etc/wanted.json
 ```
