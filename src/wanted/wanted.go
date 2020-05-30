@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version = "0.0.14"
+	Version = "0.0.15"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"

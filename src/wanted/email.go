@@ -88,7 +88,9 @@ func (m *emailMessage) AddAttachment(path string, compress bool) error {
 			return err
 		}
 	}
-	encoder.Close()
+	if err = encoder.Close(); err != nil {
+		return err
+	}
 	h := make(textproto.MIMEHeader, 3)
 	h.Set("Content-Type", "application/octet-stream")
 	h.Set("Content-Transfer-Encoding", "base64")
