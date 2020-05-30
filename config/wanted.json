@@ -12,7 +12,8 @@
     },
     "request": {
       "urls": [],
-      "files": []
+      "files": [],
+      "remove": true
     },
     "mail": {
       "hosts": [],
@@ -22,14 +23,16 @@
       "to": [],
       "subject": "",
       "body": "",
-      "files": []
+      "files": [],
+      "remove": true
     },
     "timeout": "16s"
   },
   "kill": {
     "pids": [],
     "pidfiles": [],
-    "signal": 9
+    "signal": 9,
+    "remove": true
   },
   "remove": {
     "paths": []

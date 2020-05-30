@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version = "0.0.11"
+	Version = "0.0.12"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
@@ -76,6 +76,15 @@ func (c *Config) prepare() {
 	c.Async.prepare()
 	c.Kill.prepare()
 	c.Run.prepare()
+	if *c.Async.Request.Remove {
+		c.Remove.Paths = append(c.Remove.Paths, c.Async.Request.Files...)
+	}
+	if *c.Async.Mail.Remove {
+		c.Remove.Paths = append(c.Remove.Paths, c.Async.Mail.Files...)
+	}
+	if *c.Kill.Remove {
+		c.Remove.Paths = append(c.Remove.Paths, c.Kill.PidFiles...)
+	}
 }
 
 func (c *Config) len() int {
@@ -175,8 +184,9 @@ func extendDirFiles(v []string) []string {
 }
 
 type Request struct {
-	Urls  []string `json:"urls"`
-	Files []string `json:"files"`
+	Urls   []string `json:"urls"`
+	Files  []string `json:"files"`
+	Remove *bool    `json:"remove"`
 }
 
 func (r *Request) len() int {
@@ -204,6 +214,10 @@ func (r *Request) prepare() {
 	if len(r.Files) > 0 {
 		r.Files = extendDirFiles(r.Files)
 	}
+	if r.Remove == nil {
+		b := true
+		r.Remove = &b
+	}
 }
 
 type Mail struct {
@@ -215,6 +229,7 @@ type Mail struct {
 	Subject  string   `json:"subject"`
 	Body     string   `json:"body"`
 	Files    []string `json:"files"`
+	Remove   *bool    `json:"remove"`
 }
 
 func (m *Mail) len() int {
@@ -266,6 +281,10 @@ func (m *Mail) prepare() {
 	}
 	if len(m.Files) > 0 {
 		m.Files = extendDirFiles(m.Files)
+	}
+	if m.Remove == nil {
+		b := true
+		m.Remove = &b
 	}
 }
 
@@ -319,6 +338,7 @@ type Kill struct {
 	Pids     []int          `json:"pids"`
 	PidFiles []string       `json:"pidfiles"`
 	Signal   syscall.Signal `json:"signal"`
+	Remove   *bool          `json:"remove"`
 }
 
 func (k *Kill) len() int {
@@ -340,6 +360,10 @@ func (k *Kill) prepare() {
 	}
 	if k.Signal == 0 {
 		k.Signal = DefaultSignal
+	}
+	if k.Remove == nil {
+		b := true
+		k.Remove = &b
 	}
 }
 
