@@ -2,6 +2,7 @@ package wanted
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"encoding/base64"
 	"io"
@@ -57,7 +58,7 @@ func (m *emailMessage) MakeHeader(boundary string) textproto.MIMEHeader {
 	return h
 }
 
-func (m *emailMessage) AddAttachment(path string) error {
+func (m *emailMessage) AddAttachment(path string, compress bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -74,8 +75,18 @@ func (m *emailMessage) AddAttachment(path string) error {
 		base64.StdEncoding.EncodedLen(int(finfo.Size())),
 	))
 	encoder := base64.NewEncoder(base64.StdEncoding, buf)
-	if _, err = io.Copy(encoder, f); err != nil {
-		return err
+	if compress {
+		zw := gzip.NewWriter(encoder)
+		if _, err = io.Copy(zw, f); err != nil {
+			return err
+		}
+		if err = zw.Close(); err != nil {
+			return err
+		}
+	} else {
+		if _, err = io.Copy(encoder, f); err != nil {
+			return err
+		}
 	}
 	encoder.Close()
 	h := make(textproto.MIMEHeader, 3)

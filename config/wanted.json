@@ -25,6 +25,7 @@
       "subject": "",
       "body": "",
       "files": [],
+      "compress": true,
       "remove": true
     },
     "timeout": "16s"

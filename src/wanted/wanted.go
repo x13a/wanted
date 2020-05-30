@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version = "0.0.13"
+	Version = "0.0.14"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
@@ -234,6 +234,7 @@ type Mail struct {
 	Subject  string   `json:"subject"`
 	Body     string   `json:"body"`
 	Files    []string `json:"files"`
+	Compress *bool    `json:"compress"`
 	Remove   *bool    `json:"remove"`
 }
 
@@ -286,6 +287,10 @@ func (m *Mail) prepare() {
 	}
 	if len(m.Files) > 0 {
 		m.Files = extendDirFiles(m.Files)
+	}
+	if m.Compress == nil {
+		b := true
+		m.Compress = &b
 	}
 	if m.Remove == nil {
 		b := true
@@ -592,6 +597,7 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 		wg.Add(n)
 		httpClient := &http.Client{Timeout: w.config.Async.Timeout.Unwrap()}
 		hasFiles := len(w.config.Async.Request.Files) > 0
+		compress := *w.config.Async.Request.Compress
 		request := func(url string) {
 			defer wg.Done()
 			if hasFiles {
@@ -601,7 +607,7 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 					w.config.Async.Request.Files,
 					w.errors,
 					true,
-					*w.config.Async.Request.Compress,
+					compress,
 				)
 			} else {
 				if resp, err := httpClient.Get(url); err != nil {
@@ -629,8 +635,9 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 		}
 		msg.Subject = w.config.Async.Mail.Subject
 		msg.Body = w.config.Async.Mail.Body
+		compress := *w.config.Async.Mail.Compress
 		for _, path := range w.config.Async.Mail.Files {
-			if err := msg.AddAttachment(path); err != nil {
+			if err := msg.AddAttachment(path, compress); err != nil {
 				w.errors <- err
 			}
 		}
