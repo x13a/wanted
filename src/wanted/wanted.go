@@ -1,6 +1,7 @@
 package wanted
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,13 +22,13 @@ import (
 )
 
 const (
-	Version = "0.0.10"
+	Version = "0.0.11"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
 	EnvMailPassword = envPrefix + "MAIL_PASSWORD"
 
-	DefaultTimeout     = Duration(1 << 4 * time.Second)
+	DefaultTimeout     = 1 << 4 * time.Second
 	DefaultSignal      = syscall.SIGKILL
 	FallbackExecutable = "/bin/sh"
 
@@ -43,11 +44,11 @@ type Config struct {
 	path   string
 }
 
-func (c Config) Path() string {
+func (c *Config) Path() string {
 	return c.path
 }
 
-func (c Config) String() string {
+func (c *Config) String() string {
 	return ""
 }
 
@@ -71,16 +72,17 @@ func (c *Config) Set(s string) error {
 }
 
 func (c *Config) prepare() {
+	c.Notify.prepare()
 	c.Async.prepare()
 	c.Kill.prepare()
 	c.Run.prepare()
 }
 
-func (c Config) len() int {
+func (c *Config) len() int {
 	return c.Async.len() + c.Kill.len() + c.Remove.len() + c.Run.len()
 }
 
-func (c Config) errorsCap() int {
+func (c *Config) errorsCap() int {
 	return c.len() + len(c.Async.Request.Files)*c.Async.Request.len() +
 		len(c.Async.Mail.Files)
 }
@@ -100,23 +102,25 @@ func (c *Config) check() error {
 
 type Duration time.Duration
 
+func (d *Duration) Set(s string) error {
+	if s == "" {
+		*d = 0
+		return nil
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
 		return err
 	}
-	var v time.Duration
-	var err error
-	if s == "" {
-		v = 0
-	} else {
-		v, err = time.ParseDuration(s)
-		if err != nil {
-			return err
-		}
-	}
-	*d = Duration(v)
-	return nil
+	return d.Set(s)
 }
 
 func (d Duration) Unwrap() time.Duration {
@@ -126,6 +130,12 @@ func (d Duration) Unwrap() time.Duration {
 type Notify struct {
 	Threshold int      `json:"threshold"`
 	Delay     Duration `json:"delay"`
+}
+
+func (n *Notify) prepare() {
+	if n.Threshold < 1 {
+		n.Threshold = 1
+	}
 }
 
 type CheckError struct {
@@ -169,11 +179,11 @@ type Request struct {
 	Files []string `json:"files"`
 }
 
-func (r Request) len() int {
+func (r *Request) len() int {
 	return len(r.Urls)
 }
 
-func (r Request) check() error {
+func (r *Request) check() error {
 	op := "request"
 	for _, url := range r.Urls {
 		u, err := urlpkg.ParseRequestURI(url)
@@ -207,11 +217,11 @@ type Mail struct {
 	Files    []string `json:"files"`
 }
 
-func (m Mail) len() int {
+func (m *Mail) len() int {
 	return len(m.Hosts)
 }
 
-func (m Mail) check() error {
+func (m *Mail) check() error {
 	op := "mail"
 	validate := func(s string) error {
 		if strings.ContainsAny(s, emailNewLine) {
@@ -266,11 +276,11 @@ type Async struct {
 	Timeout Duration `json:"timeout"`
 }
 
-func (a Async) len() int {
+func (a *Async) len() int {
 	return a.Run.len() + a.Request.len() + a.Mail.len()
 }
 
-func (a Async) check() error {
+func (a *Async) check() error {
 	if err := a.Run.check(); err != nil {
 		return err
 	}
@@ -285,7 +295,7 @@ func (a Async) check() error {
 
 func (a *Async) prepare() {
 	if a.Timeout == 0 {
-		a.Timeout = DefaultTimeout
+		a.Timeout = Duration(DefaultTimeout)
 	}
 	a.Run.prepare()
 	a.Request.prepare()
@@ -306,15 +316,16 @@ func (e *KillError) Unwrap() error {
 }
 
 type Kill struct {
-	Pids   []int          `json:"pids"`
-	Signal syscall.Signal `json:"signal"`
+	Pids     []int          `json:"pids"`
+	PidFiles []string       `json:"pidfiles"`
+	Signal   syscall.Signal `json:"signal"`
 }
 
-func (k Kill) len() int {
-	return len(k.Pids)
+func (k *Kill) len() int {
+	return len(k.Pids) + len(k.PidFiles)
 }
 
-func (k Kill) check() error {
+func (k *Kill) check() error {
 	for _, pid := range k.Pids {
 		if err := syscall.Kill(pid, 0); err != nil {
 			return &KillError{pid, err}
@@ -324,6 +335,9 @@ func (k Kill) check() error {
 }
 
 func (k *Kill) prepare() {
+	if len(k.PidFiles) > 0 {
+		k.PidFiles = extendDirFiles(k.PidFiles)
+	}
 	if k.Signal == 0 {
 		k.Signal = DefaultSignal
 	}
@@ -333,7 +347,7 @@ type Remove struct {
 	Paths []string `json:"paths"`
 }
 
-func (r Remove) len() int {
+func (r *Remove) len() int {
 	return len(r.Paths)
 }
 
@@ -344,7 +358,7 @@ type Run struct {
 	Option     string   `json:"option"`
 }
 
-func (r Run) len() int {
+func (r *Run) len() int {
 	return len(r.Commands)
 }
 
@@ -360,14 +374,14 @@ func (r *Run) prepare() {
 	}
 }
 
-func (r Run) check() error {
+func (r *Run) check() error {
 	if err := syscall.Access(r.Executable, 0x1); err != nil {
 		return &os.PathError{"access", r.Executable, err}
 	}
 	return nil
 }
 
-func (r Run) env() []string {
+func (r *Run) env() []string {
 	return append(os.Environ(), r.Env...)
 }
 
@@ -402,9 +416,8 @@ func (w *Wanted) StartMonitor() bool {
 }
 
 func (w *Wanted) startMonitor() {
-	threshold := max(1, w.config.Notify.Threshold)
-	prethreshold := threshold - 1
-	sigchan := make(chan os.Signal, threshold*2+1)
+	prethreshold := w.config.Notify.Threshold - 1
+	sigchan := make(chan os.Signal, w.config.Notify.Threshold*2+1)
 	fire := make(chan struct{})
 	signal.Notify(sigchan, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
 	delay := w.config.Notify.Delay.Unwrap()
@@ -429,7 +442,7 @@ Loop:
 			switch sig {
 			case syscall.SIGUSR1:
 				i++
-				if i == threshold {
+				if i == w.config.Notify.Threshold {
 					t = time.AfterFunc(delay, arm)
 				}
 			case syscall.SIGUSR2:
@@ -455,6 +468,7 @@ Loop:
 			return
 		}
 	}
+	log.Println("Fired at:", time.Now().Format(time.RFC1123Z))
 	w.clean()
 	close(w.errors)
 	w.state.Lock()
@@ -525,7 +539,9 @@ func (w *Wanted) doAsyncRun(wg *sync.WaitGroup) {
 		timeout := w.config.Async.Timeout.Unwrap()
 		env := w.config.Async.Run.env()
 		run := func(command string) {
+			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
 			cmd := exec.CommandContext(
 				ctx,
 				w.config.Async.Run.Executable,
@@ -534,8 +550,6 @@ func (w *Wanted) doAsyncRun(wg *sync.WaitGroup) {
 			)
 			cmd.Env = env
 			w.errors <- cmd.Run()
-			cancel()
-			wg.Done()
 		}
 		for _, command := range w.config.Async.Run.Commands {
 			go run(command)
@@ -550,6 +564,7 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 		httpClient := &http.Client{Timeout: w.config.Async.Timeout.Unwrap()}
 		hasFiles := len(w.config.Async.Request.Files) > 0
 		request := func(url string) {
+			defer wg.Done()
 			if hasFiles {
 				postFiles(
 					httpClient,
@@ -565,7 +580,6 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 					resp.Body.Close()
 				}
 			}
-			wg.Done()
 		}
 		for _, url := range w.config.Async.Request.Urls {
 			go request(url)
@@ -585,8 +599,8 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 		}
 		msg.Subject = w.config.Async.Mail.Subject
 		msg.Body = w.config.Async.Mail.Body
-		for _, filePath := range w.config.Async.Mail.Files {
-			if err := msg.AddAttachment(filePath); err != nil {
+		for _, path := range w.config.Async.Mail.Files {
+			if err := msg.AddAttachment(path); err != nil {
 				w.errors <- err
 			}
 		}
@@ -594,6 +608,7 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 			return s + "@" + domain
 		}
 		mail := func(host string) {
+			defer wg.Done()
 			deadline := time.Now().Add(timeout)
 			msg1 := msg
 			from := w.config.Async.Mail.From
@@ -619,7 +634,6 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 			); err != nil {
 				w.errors <- err
 			}
-			wg.Done()
 		}
 		for _, host := range w.config.Async.Mail.Hosts {
 			go mail(host)
@@ -628,10 +642,26 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 }
 
 func (w *Wanted) doKill() {
-	for _, pid := range w.config.Kill.Pids {
+	kill := func(pid int) {
 		if err := syscall.Kill(pid, w.config.Kill.Signal); err != nil {
 			w.errors <- &KillError{pid, err}
 		}
+	}
+	for _, pid := range w.config.Kill.Pids {
+		kill(pid)
+	}
+	for _, path := range w.config.Kill.PidFiles {
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			w.errors <- err
+			continue
+		}
+		pid, err := strconv.Atoi(string(bytes.TrimSpace(content)))
+		if err != nil {
+			w.errors <- err
+			continue
+		}
+		kill(pid)
 	}
 }
 

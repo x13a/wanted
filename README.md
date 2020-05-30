@@ -17,8 +17,8 @@ Cleanup order:
 - *Remove*
 - *Run*
 
-All *async* tasks has timeout, default to 16s, and run in parallel.
-Run is a list of shell commands, by default prefixed with `$SHELL -c`.
+All *Async* tasks has timeout, default to *16s*, and run in parallel.
+*Run* is a list of shell commands, by default prefixed with `$SHELL -c`.
 
 ## Installation
 ```sh
@@ -53,7 +53,7 @@ To check config and exit:
 $ wanted -C /usr/local/etc/wanted.json
 ```
 
-To default run:
+To run with config:
 ```sh
 $ wanted -c /usr/local/etc/wanted.json
 ```

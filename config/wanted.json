@@ -28,6 +28,7 @@
   },
   "kill": {
     "pids": [],
+    "pidfiles": [],
     "signal": 9
   },
   "remove": {

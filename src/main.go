@@ -8,7 +8,7 @@ import (
 	"os"
 	"strconv"
 
-	wanted "./lib"
+	"./wanted"
 )
 
 const (
@@ -18,9 +18,9 @@ const (
 	FlagRemove  = "r"
 	FlagNoLog   = "n"
 
-	ExOk     = 0
-	ExErr    = 1
-	ExArgErr = 2
+	ExitSuccess = 0
+	ExitFailure = 1
+	ExitUsage   = 2
 )
 
 type Opts struct {
@@ -32,6 +32,10 @@ type Opts struct {
 }
 
 func parseArgs() *Opts {
+	if len(os.Args) < 2 {
+		flag.Usage()
+		os.Exit(ExitUsage)
+	}
 	opts := &Opts{}
 	isHelp := flag.Bool("h", false, "Print help and exit")
 	isVersion := flag.Bool("V", false, "Print version and exit")
@@ -43,11 +47,11 @@ func parseArgs() *Opts {
 	flag.Parse()
 	if *isHelp {
 		flag.Usage()
-		os.Exit(ExOk)
+		os.Exit(ExitSuccess)
 	}
 	if *isVersion {
 		fmt.Println(wanted.Version)
-		os.Exit(ExOk)
+		os.Exit(ExitSuccess)
 	}
 	if opts.check.Path() != "" {
 		opts.config = opts.check
@@ -58,18 +62,18 @@ func parseArgs() *Opts {
 			FlagCheck,
 			FlagConfig,
 		)
-		os.Exit(ExArgErr)
+		os.Exit(ExitUsage)
 	}
 	return opts
 }
 
-func main() {
+func _main() (int, error) {
 	opts := parseArgs()
 	w := wanted.NewWanted(opts.config)
 	if err := w.Check(); err != nil {
-		log.Fatalln(err)
+		return ExitFailure, err
 	} else if opts.check.Path() != "" {
-		os.Exit(ExOk)
+		return ExitSuccess, nil
 	}
 	pid := os.Getpid()
 	if opts.pidfile != "" {
@@ -78,13 +82,18 @@ func main() {
 			[]byte(strconv.Itoa(pid)),
 			0644,
 		); err != nil {
-			log.Fatalln(err)
+			return ExitFailure, err
 		}
+		defer func() {
+			if err := os.Remove(opts.pidfile); err != nil {
+				log.Println(err)
+			}
+		}()
 	}
 	if opts.remove {
 		if path := opts.config.Path(); path != wanted.ArgStdin {
 			if err := os.Remove(path); err != nil {
-				log.Fatalln(err)
+				return ExitFailure, err
 			}
 		}
 	}
@@ -93,11 +102,11 @@ func main() {
 	}
 	log.Println("pid:", pid)
 	w.StartMonitor()
-	exitCode := ExOk
+	exitCode := ExitSuccess
 	for {
 		for err := range w.Errors() {
 			if err != nil {
-				exitCode = ExErr
+				exitCode = ExitFailure
 				if !opts.nolog {
 					log.Println(err)
 				}
@@ -107,10 +116,13 @@ func main() {
 			break
 		}
 	}
-	if opts.pidfile != "" {
-		if err := os.Remove(opts.pidfile); err != nil {
-			log.Println(err)
-		}
+	return exitCode, nil
+}
+
+func main() {
+	exitCode, err := _main()
+	if err != nil {
+		log.Println(err)
 	}
 	os.Exit(exitCode)
 }

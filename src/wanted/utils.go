@@ -38,8 +38,9 @@ func postFiles(
 	ignoreFileNotFound bool,
 ) {
 	r, w := io.Pipe()
+	defer r.Close()
 	m := multipart.NewWriter(w)
-	errs := make(chan error, 1)
+	errchan := make(chan error, 1)
 	go func() {
 		defer w.Close()
 		upload := func(index int, path string) error {
@@ -64,19 +65,18 @@ func postFiles(
 		}
 		for idx, path := range files {
 			if err := upload(idx, path); err != nil {
-				errs <- err
+				errchan <- err
 				return
 			}
 		}
-		errs <- m.Close()
+		errchan <- m.Close()
 	}()
 	if resp, err := client.Post(url, m.FormDataContentType(), r); err != nil {
 		errors <- err
 	} else {
 		resp.Body.Close()
-		errors <- (<-errs)
+		errors <- (<-errchan)
 	}
-	r.Close()
 }
 
 func getHostnameFromHost(s string) string {
