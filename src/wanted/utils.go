@@ -1,6 +1,7 @@
 package wanted
 
 import (
+	"compress/gzip"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -36,6 +37,7 @@ func postFiles(
 	files []string,
 	errors chan<- error,
 	ignoreFileNotFound bool,
+	compress bool,
 ) {
 	r, w := io.Pipe()
 	defer r.Close()
@@ -59,6 +61,13 @@ func postFiles(
 			)
 			if err != nil {
 				return err
+			}
+			if compress {
+				zw := gzip.NewWriter(part)
+				if _, err = io.Copy(zw, file); err != nil {
+					return err
+				}
+				return zw.Close()
 			}
 			_, err = io.Copy(part, file)
 			return err

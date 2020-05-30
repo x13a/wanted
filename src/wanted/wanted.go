@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version = "0.0.12"
+	Version = "0.0.13"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
@@ -184,9 +184,10 @@ func extendDirFiles(v []string) []string {
 }
 
 type Request struct {
-	Urls   []string `json:"urls"`
-	Files  []string `json:"files"`
-	Remove *bool    `json:"remove"`
+	Urls     []string `json:"urls"`
+	Files    []string `json:"files"`
+	Compress *bool    `json:"compress"`
+	Remove   *bool    `json:"remove"`
 }
 
 func (r *Request) len() int {
@@ -213,6 +214,10 @@ func (r *Request) check() error {
 func (r *Request) prepare() {
 	if len(r.Files) > 0 {
 		r.Files = extendDirFiles(r.Files)
+	}
+	if r.Compress == nil {
+		b := true
+		r.Compress = &b
 	}
 	if r.Remove == nil {
 		b := true
@@ -596,6 +601,7 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 					w.config.Async.Request.Files,
 					w.errors,
 					true,
+					*w.config.Async.Request.Compress,
 				)
 			} else {
 				if resp, err := httpClient.Get(url); err != nil {

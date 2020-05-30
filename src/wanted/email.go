@@ -100,10 +100,6 @@ func (w *emailWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (w *emailWriter) WriteNewString(s string) (int, error) {
-	return io.WriteString(w, s+emailNewLine)
-}
-
 func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 	ww := &emailWriter{w: w}
 	defer func() {
@@ -112,7 +108,10 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 	writer := multipart.NewWriter(ww)
 	for k, v := range m.MakeHeader(writer.Boundary()) {
 		for _, val := range v {
-			if _, err = ww.WriteNewString(k + ": " + val); err != nil {
+			if _, err = io.WriteString(
+				ww,
+				k+": "+val+emailNewLine,
+			); err != nil {
 				return
 			}
 		}
