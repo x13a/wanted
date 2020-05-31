@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Version = "0.0.15"
+	Version = "0.0.16"
 
 	envPrefix       = "WANTED_"
 	EnvMailUsername = envPrefix + "MAIL_USERNAME"
@@ -101,6 +101,9 @@ func (c *Config) check() error {
 		return err
 	}
 	if err := c.Kill.check(); err != nil {
+		return err
+	}
+	if err := c.Remove.check(); err != nil {
 		return err
 	}
 	if err := c.Run.check(); err != nil {
@@ -208,6 +211,11 @@ func (r *Request) check() error {
 			return &CheckError{op, url, "no host"}
 		}
 	}
+	for _, path := range r.Files {
+		if _, err := os.Stat(path); err != nil {
+			log.Println(err)
+		}
+	}
 	return nil
 }
 
@@ -270,6 +278,11 @@ func (m *Mail) check() error {
 		}
 		if len(m.To) == 0 {
 			return &CheckError{op, nil, "no recipients"}
+		}
+	}
+	for _, path := range m.Files {
+		if _, err := os.Stat(path); err != nil {
+			log.Println(err)
 		}
 	}
 	return nil
@@ -361,6 +374,11 @@ func (k *Kill) check() error {
 			return &KillError{pid, err}
 		}
 	}
+	for _, path := range k.PidFiles {
+		if _, err := os.Stat(path); err != nil {
+			log.Println(err)
+		}
+	}
 	return nil
 }
 
@@ -383,6 +401,15 @@ type Remove struct {
 
 func (r *Remove) len() int {
 	return len(r.Paths)
+}
+
+func (r *Remove) check() error {
+	for _, path := range r.Paths {
+		if _, err := os.Stat(path); err != nil {
+			log.Println(err)
+		}
+	}
+	return nil
 }
 
 type Run struct {
