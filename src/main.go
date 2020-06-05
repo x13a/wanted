@@ -12,30 +12,30 @@ import (
 )
 
 const (
-	FlagCheck   = "C"
-	FlagConfig  = "c"
-	FlagPidFile = "p"
-	FlagRemove  = "r"
-	FlagNoLog   = "n"
+	FlagCheck     = "C"
+	FlagConfig    = "c"
+	FlagPidFile   = "p"
+	FlagRemove    = "r"
+	FlagNoLog     = "n"
+	FlagBroadcast = "b"
 
 	ExitSuccess = 0
 	ExitFailure = 1
 	ExitUsage   = 2
+
+	DefaultConfigPath = "/usr/local/etc/wanted.json"
 )
 
 type Opts struct {
-	check   wanted.Config
-	config  wanted.Config
-	pidfile string
-	remove  bool
-	nolog   bool
+	check     wanted.Config
+	config    wanted.Config
+	pidfile   string
+	remove    bool
+	nolog     bool
+	broadcast bool
 }
 
 func parseArgs() *Opts {
-	if len(os.Args) < 2 {
-		flag.Usage()
-		os.Exit(ExitUsage)
-	}
 	opts := &Opts{}
 	isHelp := flag.Bool("h", false, "Print help and exit")
 	isVersion := flag.Bool("V", false, "Print version and exit")
@@ -44,6 +44,7 @@ func parseArgs() *Opts {
 	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid to file")
 	flag.BoolVar(&opts.remove, FlagRemove, false, "Remove configuration file")
 	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log clean errors")
+	flag.BoolVar(&opts.broadcast, FlagBroadcast, false, "Listen for broadcast")
 	flag.Parse()
 	if *isHelp {
 		flag.Usage()
@@ -56,13 +57,10 @@ func parseArgs() *Opts {
 	if opts.check.Path() != "" {
 		opts.config = opts.check
 	} else if opts.config.Path() == "" {
-		fmt.Fprintf(
-			os.Stderr,
-			"-{ %s | %s } required\n",
-			FlagCheck,
-			FlagConfig,
-		)
-		os.Exit(ExitUsage)
+		if err := opts.config.Set(DefaultConfigPath); err != nil {
+			fmt.Fprintf(os.Stderr, "%s not found\n", DefaultConfigPath)
+			os.Exit(ExitUsage)
+		}
 	}
 	return opts
 }
@@ -97,11 +95,13 @@ func _main() (int, error) {
 			}
 		}
 	}
+	if err := w.StartMonitor(opts.broadcast); err != nil {
+		return ExitFailure, err
+	}
 	if os.Geteuid() != 0 {
 		log.Println("[WARNING] running not root")
 	}
 	log.Println("pid:", pid)
-	w.StartMonitor()
 	exitCode := ExitSuccess
 	for {
 		for err := range w.Errors() {

@@ -1,6 +1,6 @@
 # wanted
 
-Run predefined tasks on signal receive.
+Run predefined tasks on signal or broadcast receive.
 
 Listen for signals:
 - *USR1* to increment counter
@@ -12,7 +12,7 @@ if while this delay counter become below threshold stop "arm" goroutine,
 else do cleanup and exit. While waiting for "fire" config can be hot reloaded.
 
 Cleanup order:
-- *Async* (*Run*, *Request*, *Mail*)
+- *Async* (*Broadcast*, *Run*, *Request*, *Mail*)
 - *Kill*
 - *Remove*
 - *Run*
@@ -37,6 +37,7 @@ Usage of wanted:
   -C value
     	Check configuration file and exit
   -V	Print version and exit
+  -b	Listen for broadcast
   -c value
     	Path to configuration file
   -h	Print help and exit
@@ -53,7 +54,12 @@ To check config and exit:
 $ wanted -C /usr/local/etc/wanted.json
 ```
 
-To run with config:
+To run with custom config filepath as signal receiver:
 ```sh
 $ wanted -c /usr/local/etc/wanted.json
+```
+
+To run with default config filepath as broadcast receiver:
+```sh
+$ wanted -b
 ```

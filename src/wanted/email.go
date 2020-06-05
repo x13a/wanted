@@ -59,12 +59,12 @@ func (m *emailMessage) MakeHeader(boundary string) textproto.MIMEHeader {
 }
 
 func (m *emailMessage) AddAttachment(path string, compress bool) error {
-	f, err := os.Open(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	finfo, err := f.Stat()
+	defer file.Close()
+	fileinfo, err := file.Stat()
 	if err != nil {
 		return err
 	}
@@ -72,19 +72,19 @@ func (m *emailMessage) AddAttachment(path string, compress bool) error {
 	buf := bytes.NewBuffer(make(
 		[]byte,
 		0,
-		base64.StdEncoding.EncodedLen(int(finfo.Size())),
+		base64.StdEncoding.EncodedLen(int(fileinfo.Size())),
 	))
 	encoder := base64.NewEncoder(base64.StdEncoding, buf)
 	if compress {
-		zw := gzip.NewWriter(encoder)
-		if _, err = io.Copy(zw, f); err != nil {
+		compressor := gzip.NewWriter(encoder)
+		if _, err = io.Copy(compressor, file); err != nil {
 			return err
 		}
-		if err = zw.Close(); err != nil {
+		if err = compressor.Close(); err != nil {
 			return err
 		}
 	} else {
-		if _, err = io.Copy(encoder, f); err != nil {
+		if _, err = io.Copy(encoder, file); err != nil {
 			return err
 		}
 	}
@@ -96,7 +96,7 @@ func (m *emailMessage) AddAttachment(path string, compress bool) error {
 	h.Set("Content-Transfer-Encoding", "base64")
 	h.Set(
 		"Content-Disposition",
-		"attachment; filename=\""+filepath.Base(f.Name())+"\"",
+		"attachment; filename=\""+filepath.Base(file.Name())+"\"",
 	)
 	m.Attachments = append(m.Attachments, emailAttachment{h, buf.Bytes()})
 	return nil
@@ -114,28 +114,28 @@ func (w *emailWriter) Write(p []byte) (n int, err error) {
 }
 
 func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
-	ww := &emailWriter{w: w}
+	ew := &emailWriter{w: w}
 	defer func() {
-		n = ww.n
+		n = ew.n
 	}()
-	writer := multipart.NewWriter(ww)
-	for k, v := range m.MakeHeader(writer.Boundary()) {
-		for _, val := range v {
+	mw := multipart.NewWriter(ew)
+	for key, values := range m.MakeHeader(mw.Boundary()) {
+		for _, value := range values {
 			if _, err = io.WriteString(
-				ww,
-				k+": "+val+emailNewLine,
+				ew,
+				key+": "+value+emailNewLine,
 			); err != nil {
 				return
 			}
 		}
 	}
-	if _, err = io.WriteString(ww, emailNewLine); err != nil {
+	if _, err = io.WriteString(ew, emailNewLine); err != nil {
 		return
 	}
 	h := make(textproto.MIMEHeader, 1)
 	h.Set("Content-Type", "text/plain; charset=\"us-ascii\"")
 	var part io.Writer
-	part, err = writer.CreatePart(h)
+	part, err = mw.CreatePart(h)
 	if err != nil {
 		return
 	}
@@ -146,7 +146,7 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 		return
 	}
 	for _, attachment := range m.Attachments {
-		part, err = writer.CreatePart(attachment.Header)
+		part, err = mw.CreatePart(attachment.Header)
 		if err != nil {
 			return
 		}
@@ -163,17 +163,17 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 			i = pos
 		}
 	}
-	if err = writer.Close(); err != nil {
+	if err = mw.Close(); err != nil {
 		return
 	}
-	_, err = io.WriteString(ww, emailNewLine)
+	_, err = io.WriteString(ew, emailNewLine)
 	return
 }
 
 func sendMailTLS(
 	addr string,
 	auth smtp.Auth,
-	msg *emailMessage,
+	msg emailMessage,
 	timeout time.Duration,
 	deadline time.Time,
 ) error {
@@ -194,23 +194,23 @@ func sendMailTLS(
 	if err = conn.SetDeadline(deadline); err != nil {
 		return err
 	}
-	c, err := smtp.NewClient(conn, hostname)
+	client, err := smtp.NewClient(conn, hostname)
 	if err != nil {
 		return err
 	}
-	defer c.Close()
-	if err = c.Auth(auth); err != nil {
+	defer client.Close()
+	if err = client.Auth(auth); err != nil {
 		return err
 	}
-	if err = c.Mail(msg.From.Address); err != nil {
+	if err = client.Mail(msg.From.Address); err != nil {
 		return err
 	}
 	for _, rcpt := range msg.To {
-		if err = c.Rcpt(rcpt.Address); err != nil {
+		if err = client.Rcpt(rcpt.Address); err != nil {
 			return err
 		}
 	}
-	w, err := c.Data()
+	w, err := client.Data()
 	if err != nil {
 		return err
 	}
@@ -220,5 +220,5 @@ func sendMailTLS(
 	if err = w.Close(); err != nil {
 		return err
 	}
-	return c.Quit()
+	return client.Quit()
 }

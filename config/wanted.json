@@ -4,11 +4,14 @@
     "delay": "0s"
   },
   "async": {
+    "broadcast": {
+      "password": "",
+      "addr": ":8989"
+    },
     "run": {
       "commands": [],
       "env": [],
-      "executable": "/bin/sh",
-      "option": "-c"
+      "prefix": ["/bin/sh", "-c"]
     },
     "request": {
       "urls": [],
@@ -28,7 +31,8 @@
       "compress": true,
       "remove": true
     },
-    "timeout": "16s"
+    "timeout": "16s",
+    "delay": "2s"
   },
   "kill": {
     "pids": [],
@@ -42,7 +46,6 @@
   "run": {
     "commands": [],
     "env": [],
-    "executable": "/bin/sh",
-    "option": "-c"
+    "prefix": ["/bin/sh", "-c"]
   }
 }
