@@ -118,13 +118,14 @@ func (n *Notify) prepare() {
 type Broadcast struct {
 	Password string `json:"password"`
 	Addr     string `json:"addr"`
+	Ignore   *bool  `json:"ignore"`
 }
 
 func (b *Broadcast) len() int {
-	if b.Password != "" {
-		return 1
+	if *b.Ignore || b.Password == "" {
+		return 0
 	}
-	return 0
+	return 1
 }
 
 func (b *Broadcast) check() error {
@@ -140,6 +141,9 @@ func (b *Broadcast) prepare() {
 	}
 	if b.Addr == "" {
 		b.Addr = DefaultBroacastAddress
+	}
+	if b.Ignore == nil {
+		setBoolRef(&b.Ignore, false)
 	}
 }
 

@@ -58,7 +58,7 @@ func parseArgs() *Opts {
 		opts.config = opts.check
 	} else if opts.config.Path() == "" {
 		if err := opts.config.Set(DefaultConfigPath); err != nil {
-			fmt.Fprintf(os.Stderr, "%s not found\n", DefaultConfigPath)
+			fmt.Fprintf(os.Stderr, "config not found: %s\n", DefaultConfigPath)
 			os.Exit(ExitUsage)
 		}
 	}
