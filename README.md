@@ -39,7 +39,7 @@ Usage of wanted:
   -V	Print version and exit
   -b	Listen for broadcast
   -c value
-    	Path to configuration file
+    	Path to configuration file (default: /usr/local/etc/wanted.json)
   -h	Print help and exit
   -n	Do not log clean errors
   -p string
@@ -51,12 +51,12 @@ Usage of wanted:
 
 To check config and exit:
 ```sh
-$ wanted -C /usr/local/etc/wanted.json
+$ wanted -C ~/wanted.json
 ```
 
 To run with custom config filepath as signal receiver:
 ```sh
-$ wanted -c /usr/local/etc/wanted.json
+$ wanted -c ~/wanted.json
 ```
 
 To run with default config filepath as broadcast receiver:
