@@ -6,7 +6,8 @@
   "async": {
     "broadcast": {
       "password": "",
-      "addr": ":8989"
+      "addr": ":8989",
+      "ignore": false
     },
     "run": {
       "commands": [],

@@ -40,7 +40,14 @@ func parseArgs() *Opts {
 	isHelp := flag.Bool("h", false, "Print help and exit")
 	isVersion := flag.Bool("V", false, "Print version and exit")
 	flag.Var(&opts.check, FlagCheck, "Check configuration file and exit")
-	flag.Var(&opts.config, FlagConfig, "Path to configuration file")
+	flag.Var(
+		&opts.config,
+		FlagConfig,
+		fmt.Sprintf(
+			"Path to configuration file (default: %s)",
+			DefaultConfigPath,
+		),
+	)
 	flag.StringVar(&opts.pidfile, FlagPidFile, "", "Write pid to file")
 	flag.BoolVar(&opts.remove, FlagRemove, false, "Remove configuration file")
 	flag.BoolVar(&opts.nolog, FlagNoLog, false, "Do not log clean errors")
@@ -105,11 +112,9 @@ func _main() (int, error) {
 	exitCode := ExitSuccess
 	for {
 		for err := range w.Errors() {
-			if err != nil {
-				exitCode = ExitFailure
-				if !opts.nolog {
-					log.Println(err)
-				}
+			exitCode = ExitFailure
+			if !opts.nolog {
+				log.Println(err)
 			}
 		}
 		if w.IsDone() {

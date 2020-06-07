@@ -115,9 +115,7 @@ func (w *emailWriter) Write(p []byte) (n int, err error) {
 
 func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 	ew := &emailWriter{w: w}
-	defer func() {
-		n = ew.n
-	}()
+	defer func() { n = ew.n }()
 	mw := multipart.NewWriter(ew)
 	for key, values := range m.MakeHeader(mw.Boundary()) {
 		for _, value := range values {
@@ -134,8 +132,7 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 	}
 	h := make(textproto.MIMEHeader, 1)
 	h.Set("Content-Type", "text/plain; charset=\"us-ascii\"")
-	var part io.Writer
-	part, err = mw.CreatePart(h)
+	part, err := mw.CreatePart(h)
 	if err != nil {
 		return
 	}

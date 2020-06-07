@@ -2,6 +2,7 @@ package wanted
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -44,7 +45,9 @@ func postFiles(
 	errors chan<- error,
 	ignoreFileNotFound bool,
 	compress bool,
+	deadline time.Time,
 ) {
+	defer close(errors)
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -89,7 +92,15 @@ func postFiles(
 		}
 		errchan <- mw.Close()
 	}()
-	if resp, err := client.Post(url, mw.FormDataContentType(), r); err != nil {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, r)
+	if err != nil {
+		errors <- err
+		return
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if resp, err := client.Do(req); err != nil {
 		errors <- err
 	} else {
 		resp.Body.Close()
@@ -145,24 +156,30 @@ func decryptAESGCM(password string, data []byte) ([]byte, error) {
 }
 
 func sendBroadcast(
+	conn *net.UDPConn,
 	address string,
 	data []byte,
 	errors chan<- error,
 	deadline time.Time,
 ) {
+	defer close(errors)
 	network := "udp4"
 	srcaddr, err := net.ResolveUDPAddr(network, address)
 	if err != nil {
 		errors <- err
 		return
 	}
-	conn, err := net.ListenUDP(network, srcaddr)
-	if err != nil {
-		errors <- err
-		return
+	broadcastSuffix := ":" + strconv.Itoa(srcaddr.Port)
+	if conn == nil {
+		srcaddr.Port = 0
+		conn, err = net.ListenUDP(network, srcaddr)
+		if err != nil {
+			errors <- err
+			return
+		}
+		defer conn.Close()
 	}
-	defer conn.Close()
-	if err = conn.SetDeadline(deadline); err != nil {
+	if err = conn.SetWriteDeadline(deadline); err != nil {
 		errors <- err
 		return
 	}
@@ -171,7 +188,6 @@ func sendBroadcast(
 		errors <- err
 		return
 	}
-	suffix := ":" + strconv.Itoa(srcaddr.Port)
 	for _, iface := range interfaces {
 		flags := net.FlagUp | net.FlagBroadcast
 		if iface.Flags&flags != flags {
@@ -189,7 +205,7 @@ func sendBroadcast(
 			}
 			dest, err := net.ResolveUDPAddr(
 				network,
-				broadcast.String()+suffix,
+				broadcast.String()+broadcastSuffix,
 			)
 			if err != nil {
 				errors <- err

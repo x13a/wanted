@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	Version = "0.1.3"
+	Version = "0.1.4"
 
 	BroadcastMessage = "fire"
 	ArgStdin         = "-"
@@ -38,13 +38,37 @@ type state struct {
 	v State
 }
 
+func (s *state) Get() (value State) {
+	s.Lock()
+	value = s.v
+	s.Unlock()
+	return
+}
+
+func (s *state) Set(value State) {
+	s.Lock()
+	s.v = value
+	s.Unlock()
+}
+
+func (s *state) CompareAndSwap(old State, new State) (swapped bool) {
+	s.Lock()
+	if s.v == old {
+		s.v = new
+		swapped = true
+	}
+	s.Unlock()
+	return
+}
+
 type WantedError struct {
+	Op          string
 	State       State
 	Description string
 }
 
 func (e *WantedError) Error() string {
-	return e.Description + ": " + strconv.Itoa(int(e.State))
+	return e.Op + " > " + e.Description + ": " + strconv.Itoa(int(e.State))
 }
 
 type Wanted struct {
@@ -52,6 +76,7 @@ type Wanted struct {
 	errors   chan error
 	stopchan chan struct{}
 	state    state
+	udpConn  *net.UDPConn
 }
 
 func (w *Wanted) Check() error {
@@ -73,29 +98,28 @@ func (w *Wanted) StartMonitor(broadcast bool) error {
 		w.state.v = StateWaiting
 		return nil
 	}
-	return &WantedError{v, "invalid state"}
+	return &WantedError{"start monitor", v, "invalid state"}
 }
 
 func (w *Wanted) stop() {
 	w.state.Lock()
-	defer w.state.Unlock()
-	if w.state.v != StateCleaning {
+	if w.state.v < StateCleaning {
 		w.state.v = StateNone
 	}
+	w.state.Unlock()
 }
 
 func (w *Wanted) startBroadcastMonitor() error {
 	network := "udp4"
-	inaddr, err := net.ResolveUDPAddr(network, w.config.Async.Broadcast.Addr)
+	addr, err := net.ResolveUDPAddr(network, w.config.Async.Broadcast.Addr)
 	if err != nil {
 		return err
 	}
-	conn, err := net.ListenUDP(network, inaddr)
+	conn, err := net.ListenUDP(network, addr)
 	if err != nil {
 		return err
 	}
-	prefix := "broadcast listener:"
-	log.Printf("%s %q\n", prefix, inaddr)
+	log.Printf("broadcast listener: %q\n", addr)
 	password := w.config.Async.Broadcast.Password
 	stopchan := make(chan struct{}, 1)
 	firechan := make(chan struct{}, 1)
@@ -108,45 +132,45 @@ func (w *Wanted) startBroadcastMonitor() error {
 		if string(data) != BroadcastMessage {
 			return
 		}
-		w.state.Lock()
-		defer w.state.Unlock()
-		if w.state.v == StateWaiting {
-			w.state.v = StateCleaning
+		if w.state.CompareAndSwap(StateWaiting, StateCleaning) {
 			firechan <- struct{}{}
 		}
 	}
 	go func() {
 		select {
 		case <-firechan:
-			closerchan := make(chan bool, 1)
-			go func() {
-				timer := time.AfterFunc(100*time.Millisecond, func() {
-					closerchan <- false
-				})
-				defer timer.Stop()
-				conn.SetDeadline(time.Now().Add(50 * time.Millisecond))
-				conn.Close()
-				closerchan <- true
-			}()
-			if !<-closerchan {
-				log.Println(prefix, "connection close timeout")
+			stopchan <- struct{}{}
+			if w.config.Async.Broadcast.len() != 0 {
+				conn.SetReadDeadline(time.Now())
+				w.udpConn = conn
+			} else {
+				go func() { conn.Close() }()
 			}
 			w.fire()
 		case <-w.stopchan:
+			stopchan <- struct{}{}
 			conn.Close()
-		case <-stopchan:
+			w.stop()
 		}
 	}()
 	go func() {
-		defer w.stop()
-		defer conn.Close()
+		maxRetries := 3
+		i := 0
 		for {
 			buf := make([]byte, 1<<8)
 			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
-				log.Println(prefix, err)
-				stopchan <- struct{}{}
-				return
+				select {
+				case <-stopchan:
+					return
+				default:
+				}
+				i += 1
+				if i == maxRetries {
+					panic(err)
+				}
+				log.Println(err)
+				continue
 			}
 			go handler(buf[:n])
 		}
@@ -158,19 +182,15 @@ func (w *Wanted) startSignalMonitor() {
 	sigstop := make(chan struct{}, 1)
 	firechan := make(chan struct{}, 1)
 	go func() {
-		defer w.stop()
 		arm := func() {
-			w.state.Lock()
-			defer w.state.Unlock()
-			if w.state.v == StateWaiting {
-				w.state.v = StateCleaning
+			if w.state.CompareAndSwap(StateWaiting, StateCleaning) {
 				firechan <- struct{}{}
 			}
 		}
 		threshold := w.config.Notify.Threshold
 		prethreshold := threshold - 1
 		delay := w.config.Notify.Delay.Unwrap()
-		sigchan := make(chan os.Signal, threshold*2+1)
+		sigchan := make(chan os.Signal, threshold<<2+1)
 		signal.Notify(
 			sigchan,
 			syscall.SIGUSR1,
@@ -198,18 +218,24 @@ func (w *Wanted) startSignalMonitor() {
 						}
 					}
 				case syscall.SIGHUP:
-					if err := w.reconfig(); err != nil {
+					var err error
+					w.state.Lock()
+					if w.state.v < StateCleaning {
+						err = w.reconfig()
+					}
+					w.state.Unlock()
+					if err != nil {
 						log.Println("HUP:", err)
-					} else {
-						isArmed := i >= threshold
-						delay = w.config.Notify.Delay.Unwrap()
-						threshold = w.config.Notify.Threshold
-						prethreshold = threshold - 1
-						if i >= threshold && !isArmed {
-							timer = time.AfterFunc(delay, arm)
-						} else if i <= prethreshold && isArmed {
-							timer.Stop()
-						}
+						break
+					}
+					isArmed := i >= threshold
+					threshold = w.config.Notify.Threshold
+					prethreshold = threshold - 1
+					delay = w.config.Notify.Delay.Unwrap()
+					if i >= threshold && !isArmed {
+						timer = time.AfterFunc(delay, arm)
+					} else if i <= prethreshold && isArmed {
+						timer.Stop()
 					}
 				}
 			case <-sigstop:
@@ -223,23 +249,19 @@ func (w *Wanted) startSignalMonitor() {
 		w.fire()
 	case <-w.stopchan:
 		sigstop <- struct{}{}
+		w.stop()
 	}
 }
 
 func (w *Wanted) fire() {
 	log.Println("Fired at:", time.Now().Format(time.RFC1123Z))
 	w.clean()
-	w.state.Lock()
-	w.state.v = StateDone
-	w.state.Unlock()
+	w.state.Set(StateDone)
 	close(w.errors)
 }
 
 func (w *Wanted) StopMonitor() bool {
-	w.state.Lock()
-	defer w.state.Unlock()
-	if w.state.v == StateWaiting {
-		w.state.v = StateStopping
+	if w.state.CompareAndSwap(StateWaiting, StateStopping) {
 		w.stopchan <- struct{}{}
 		return true
 	}
@@ -251,14 +273,11 @@ func (w *Wanted) Errors() <-chan error {
 }
 
 func (w *Wanted) IsDone() bool {
-	w.state.Lock()
-	v := w.state.v
-	w.state.Unlock()
-	return v == StateDone
+	return w.state.Get() == StateDone
 }
 
 func (w *Wanted) reconfig() error {
-	var config Config
+	config := Config{}
 	if err := config.Set(w.config.path); err != nil {
 		return err
 	}
@@ -285,16 +304,18 @@ func (w *Wanted) clean() {
 func (w *Wanted) doAsync() {
 	waitchan := make(chan bool, 1)
 	go func() {
+		timeout := w.config.Async.Timeout.Unwrap()
+		deadline := time.Now().Add(timeout)
 		timer := time.AfterFunc(
-			w.config.Async.Timeout.Unwrap()+w.config.Async.Delay.Unwrap(),
+			timeout+w.config.Async.Delay.Unwrap(),
 			func() { waitchan <- false },
 		)
 		defer timer.Stop()
 		var wg sync.WaitGroup
-		w.doAsyncBroadcast(&wg)
-		w.doAsyncRun(&wg)
-		w.doAsyncRequest(&wg)
-		w.doAsyncMail(&wg)
+		w.doAsyncBroadcast(&wg, deadline)
+		w.doAsyncRun(&wg, deadline)
+		w.doAsyncRequest(&wg, deadline)
+		w.doAsyncMail(&wg, deadline)
 		wg.Wait()
 		waitchan <- true
 	}()
@@ -303,68 +324,114 @@ func (w *Wanted) doAsync() {
 	}
 }
 
-func (w *Wanted) doAsyncBroadcast(wg *sync.WaitGroup) {
+func (w *Wanted) doAsyncBroadcast(wg *sync.WaitGroup, deadline time.Time) {
 	n := w.config.Async.Broadcast.len()
-	if n > 0 {
-		wg.Add(n)
-		deadline := time.Now().Add(w.config.Async.Timeout.Unwrap())
-		go func() {
-			defer wg.Done()
-			msg, err := encryptAESGCM(
-				w.config.Async.Broadcast.Password,
-				[]byte(BroadcastMessage),
-			)
-			if err != nil {
-				w.errors <- err
-				return
-			}
-			sendBroadcast(
-				w.config.Async.Broadcast.Addr,
-				msg,
-				w.errors,
-				deadline,
-			)
-		}()
+	if n == 0 {
+		return
 	}
+	wg.Add(n)
+	go func() {
+		defer wg.Done()
+		if w.udpConn != nil {
+			defer w.udpConn.Close()
+		}
+		msg, err := encryptAESGCM(
+			w.config.Async.Broadcast.Password,
+			[]byte(BroadcastMessage),
+		)
+		if err != nil {
+			w.errors <- err
+			return
+		}
+		errors := make(chan error, w.config.Async.Broadcast.errorsCap())
+		sendBroadcast(
+			w.udpConn,
+			w.config.Async.Broadcast.Addr,
+			msg,
+			errors,
+			deadline,
+		)
+		for err = range errors {
+			w.errors <- err
+		}
+	}()
 }
 
-func (w *Wanted) doAsyncRun(wg *sync.WaitGroup) {
+func (w *Wanted) doAsyncRun(wg *sync.WaitGroup, deadline time.Time) {
 	n := w.config.Async.Run.len()
-	if n > 0 {
-		wg.Add(n)
-		timeout := w.config.Async.Timeout.Unwrap()
-		self := w.config.Async.Run
-		env := self.env()
+	if n == 0 {
+		return
+	}
+	wg.Add(n)
+	go func() {
+		args := w.config.Async.Run.args()
+		lenArgs := len(args)
+		idx := lenArgs - 1
+		env := w.config.Async.Run.env()
 		run := func(command string) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
-			args := self.args()
-			args[len(args)-1] = command
-			cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+			args1 := make([]string, lenArgs)
+			copy(args1, args)
+			args1[idx] = command
+			cmd := exec.CommandContext(ctx, args1[0], args1[1:]...)
 			cmd.Env = env
-			w.errors <- cmd.Run()
+			if err := cmd.Run(); err != nil {
+				w.errors <- err
+			}
 		}
-		for _, command := range self.Commands {
+		for _, command := range w.config.Async.Run.Commands {
 			go run(command)
 		}
-	}
+	}()
 }
 
-func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
+func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup, deadline time.Time) {
 	n := w.config.Async.Request.len()
-	if n > 0 {
-		wg.Add(n)
+	if n == 0 {
+		return
+	}
+	wg.Add(n)
+	go func() {
 		httpClient := &http.Client{Timeout: w.config.Async.Timeout.Unwrap()}
 		files := w.config.Async.Request.Files
-		hasFiles := len(files) > 0
+		hasFiles := len(files) != 0
 		compress := *w.config.Async.Request.Compress
+		errorsCap := w.config.Async.Request.errorsCapPerItem()
 		request := func(url string) {
 			defer wg.Done()
 			if hasFiles {
-				postFiles(httpClient, url, files, w.errors, true, compress)
+				errors := make(chan error, errorsCap)
+				postFiles(
+					httpClient,
+					url,
+					files,
+					errors,
+					true,
+					compress,
+					deadline,
+				)
+				for err := range errors {
+					w.errors <- err
+				}
 			} else {
-				if resp, err := httpClient.Get(url); err != nil {
+				ctx, cancel := context.WithDeadline(
+					context.Background(),
+					deadline,
+				)
+				defer cancel()
+				req, err := http.NewRequestWithContext(
+					ctx,
+					http.MethodGet,
+					url,
+					nil,
+				)
+				if err != nil {
+					w.errors <- err
+					return
+				}
+				if resp, err := httpClient.Do(req); err != nil {
 					w.errors <- err
 				} else {
 					resp.Body.Close()
@@ -374,16 +441,18 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup) {
 		for _, url := range w.config.Async.Request.Urls {
 			go request(url)
 		}
-	}
+	}()
 }
 
-func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
+func (w *Wanted) doAsyncMail(wg *sync.WaitGroup, deadline time.Time) {
 	n := w.config.Async.Mail.len()
-	if n > 0 {
-		wg.Add(n)
+	if n == 0 {
+		return
+	}
+	wg.Add(n)
+	go func() {
 		isMultihost := n > 1
 		timeout := w.config.Async.Timeout.Unwrap()
-		deadline := time.Now().Add(timeout)
 		from := w.config.Async.Mail.From
 		username := w.config.Async.Mail.Username
 		password := w.config.Async.Mail.Password
@@ -397,6 +466,12 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 		for _, path := range w.config.Async.Mail.Files {
 			if err := msg.AddAttachment(path, compress); err != nil {
 				w.errors <- err
+			}
+			if !time.Now().Before(deadline) {
+				for i := 0; i < n; i++ {
+					wg.Done()
+				}
+				return
 			}
 		}
 		addDomain := func(s, domain string) string {
@@ -427,10 +502,13 @@ func (w *Wanted) doAsyncMail(wg *sync.WaitGroup) {
 		for _, host := range w.config.Async.Mail.Hosts {
 			go mail(host)
 		}
-	}
+	}()
 }
 
 func (w *Wanted) doKill() {
+	if w.config.Kill.len() == 0 {
+		return
+	}
 	signal := w.config.Kill.Signal
 	kill := func(pid int) {
 		if err := syscall.Kill(pid, signal); err != nil {
@@ -457,20 +535,25 @@ func (w *Wanted) doKill() {
 
 func (w *Wanted) doRemove() {
 	for _, path := range w.config.Remove.Paths {
-		w.errors <- os.RemoveAll(path)
+		if err := os.RemoveAll(path); err != nil {
+			w.errors <- err
+		}
 	}
 }
 
 func (w *Wanted) doRun() {
-	if w.config.Run.len() > 0 {
-		args := w.config.Run.args()
-		idx := len(args) - 1
-		env := w.config.Run.env()
-		for _, command := range w.config.Run.Commands {
-			args[idx] = command
-			cmd := exec.Command(args[0], args[1:]...)
-			cmd.Env = env
-			w.errors <- cmd.Run()
+	if w.config.Run.len() == 0 {
+		return
+	}
+	args := w.config.Run.args()
+	idx := len(args) - 1
+	env := w.config.Run.env()
+	for _, command := range w.config.Run.Commands {
+		args[idx] = command
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = env
+		if err := cmd.Run(); err != nil {
+			w.errors <- err
 		}
 	}
 }
@@ -482,5 +565,6 @@ func NewWanted(c Config) *Wanted {
 		errors:   make(chan error, c.errorsCap()),
 		stopchan: make(chan struct{}),
 		state:    state{v: StateNone},
+		udpConn:  nil,
 	}
 }

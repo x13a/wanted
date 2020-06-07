@@ -185,7 +185,7 @@ func (r *Request) check() error {
 }
 
 func (r *Request) prepare() {
-	if len(r.Files) > 0 {
+	if len(r.Files) != 0 {
 		r.Files = extendDirFiles(r.Files)
 	}
 	if r.Compress == nil {
@@ -197,7 +197,11 @@ func (r *Request) prepare() {
 }
 
 func (r *Request) errorsCap() int {
-	return r.len() * len(r.Files)
+	return r.len() * r.errorsCapPerItem()
+}
+
+func (r *Request) errorsCapPerItem() int {
+	return len(r.Files) + 1
 }
 
 type Mail struct {
@@ -236,7 +240,7 @@ func (m *Mail) check() error {
 	if err := validate(m.Subject); err != nil {
 		return err
 	}
-	if m.len() > 0 {
+	if m.len() != 0 {
 		if m.Username == "" {
 			return &CheckError{op, "", "empty username"}
 		}
@@ -271,7 +275,7 @@ func (m *Mail) prepare() {
 	if m.From == "" {
 		m.From = m.Username
 	}
-	if len(m.Files) > 0 {
+	if len(m.Files) != 0 {
 		m.Files = extendDirFiles(m.Files)
 	}
 	if m.Compress == nil {
@@ -358,7 +362,7 @@ func (k *Kill) check() error {
 }
 
 func (k *Kill) prepare() {
-	if len(k.PidFiles) > 0 {
+	if len(k.PidFiles) != 0 {
 		k.PidFiles = extendDirFiles(k.PidFiles)
 	}
 	if k.Signal == 0 {
