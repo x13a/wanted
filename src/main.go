@@ -117,7 +117,7 @@ func _main() (int, error) {
 				log.Println(err)
 			}
 		}
-		if w.IsDone() {
+		if w.State() == wanted.StateDone {
 			break
 		}
 	}

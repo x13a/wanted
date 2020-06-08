@@ -148,7 +148,7 @@ func (b *Broadcast) prepare() {
 }
 
 func (b *Broadcast) errorsCap() int {
-	return 20
+	return 21
 }
 
 type Request struct {

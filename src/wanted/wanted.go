@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	Version = "0.1.4"
+	Version = "0.1.5"
 
 	BroadcastMessage = "fire"
 	ArgStdin         = "-"
@@ -80,7 +80,13 @@ type Wanted struct {
 }
 
 func (w *Wanted) Check() error {
-	return w.config.check()
+	w.state.Lock()
+	defer w.state.Unlock()
+	v := w.state.v
+	if v == StateNone {
+		return w.config.check()
+	}
+	return &WantedError{"check", v, "invalid state"}
 }
 
 func (w *Wanted) StartMonitor(broadcast bool) error {
@@ -93,7 +99,7 @@ func (w *Wanted) StartMonitor(broadcast bool) error {
 				return err
 			}
 		} else {
-			go w.startSignalMonitor()
+			w.startSignalMonitor()
 		}
 		w.state.v = StateWaiting
 		return nil
@@ -102,11 +108,7 @@ func (w *Wanted) StartMonitor(broadcast bool) error {
 }
 
 func (w *Wanted) stop() {
-	w.state.Lock()
-	if w.state.v < StateCleaning {
-		w.state.v = StateNone
-	}
-	w.state.Unlock()
+	w.state.Set(StateNone)
 }
 
 func (w *Wanted) startBroadcastMonitor() error {
@@ -120,26 +122,12 @@ func (w *Wanted) startBroadcastMonitor() error {
 		return err
 	}
 	log.Printf("broadcast listener: %q\n", addr)
-	password := w.config.Async.Broadcast.Password
-	stopchan := make(chan struct{}, 1)
-	firechan := make(chan struct{}, 1)
-	handler := func(data []byte) {
-		data, err := decryptAESGCM(password, data)
-		if err != nil {
-			log.Println("decrypt:", err)
-			return
-		}
-		if string(data) != BroadcastMessage {
-			return
-		}
-		if w.state.CompareAndSwap(StateWaiting, StateCleaning) {
-			firechan <- struct{}{}
-		}
-	}
+	firechan := make(chan struct{})
+	stopchan := make(chan struct{})
 	go func() {
 		select {
 		case <-firechan:
-			stopchan <- struct{}{}
+			close(stopchan)
 			if w.config.Async.Broadcast.len() != 0 {
 				conn.SetReadDeadline(time.Now())
 				w.udpConn = conn
@@ -148,12 +136,26 @@ func (w *Wanted) startBroadcastMonitor() error {
 			}
 			w.fire()
 		case <-w.stopchan:
-			stopchan <- struct{}{}
+			close(stopchan)
 			conn.Close()
 			w.stop()
 		}
 	}()
 	go func() {
+		password := w.config.Async.Broadcast.Password
+		handler := func(data []byte) {
+			data, err := decryptAESGCM(password, data)
+			if err != nil {
+				log.Println("decrypt:", err)
+				return
+			}
+			if string(data) != BroadcastMessage {
+				return
+			}
+			if w.state.CompareAndSwap(StateWaiting, StateCleaning) {
+				close(firechan)
+			}
+		}
 		maxRetries := 3
 		i := 0
 		for {
@@ -165,7 +167,7 @@ func (w *Wanted) startBroadcastMonitor() error {
 					return
 				default:
 				}
-				i += 1
+				i++
 				if i == maxRetries {
 					panic(err)
 				}
@@ -179,24 +181,68 @@ func (w *Wanted) startBroadcastMonitor() error {
 }
 
 func (w *Wanted) startSignalMonitor() {
-	sigstop := make(chan struct{}, 1)
-	firechan := make(chan struct{}, 1)
+	firechan := make(chan struct{})
+	sigstop := make(chan struct{})
+	stopchan := make(chan struct{}, 2)
+	go func() {
+		select {
+		case <-firechan:
+			close(sigstop)
+			w.fire()
+		case <-w.stopchan:
+			close(sigstop)
+			stopCap := cap(stopchan)
+			for i := 0; i < stopCap; i++ {
+				<-stopchan
+			}
+			w.stop()
+		}
+	}()
+	hupchan := make(chan struct{}, 1)
+	go func() {
+		sigchan := make(chan os.Signal, 1)
+		signal.Notify(sigchan, syscall.SIGHUP)
+		defer signal.Stop(sigchan)
+		for {
+			select {
+			case <-sigchan:
+				var err error
+				ok := false
+				w.state.Lock()
+				if w.state.v < StateCleaning {
+					err = w.reconfig()
+					ok = true
+				}
+				w.state.Unlock()
+				if !ok {
+					return
+				}
+				if err != nil {
+					log.Println("HUP:", err)
+					break
+				}
+				select {
+				case <-hupchan:
+				default:
+				}
+				hupchan <- struct{}{}
+			case <-sigstop:
+				stopchan <- struct{}{}
+				return
+			}
+		}
+	}()
 	go func() {
 		arm := func() {
 			if w.state.CompareAndSwap(StateWaiting, StateCleaning) {
-				firechan <- struct{}{}
+				close(firechan)
 			}
 		}
 		threshold := w.config.Notify.Threshold
 		prethreshold := threshold - 1
 		delay := w.config.Notify.Delay.Unwrap()
-		sigchan := make(chan os.Signal, threshold<<2+1)
-		signal.Notify(
-			sigchan,
-			syscall.SIGUSR1,
-			syscall.SIGUSR2,
-			syscall.SIGHUP,
-		)
+		sigchan := make(chan os.Signal, threshold<<2)
+		signal.Notify(sigchan, syscall.SIGUSR1, syscall.SIGUSR2)
 		defer signal.Stop(sigchan)
 		i := 0
 		timer := time.NewTimer(0)
@@ -217,40 +263,23 @@ func (w *Wanted) startSignalMonitor() {
 							timer.Stop()
 						}
 					}
-				case syscall.SIGHUP:
-					var err error
-					w.state.Lock()
-					if w.state.v < StateCleaning {
-						err = w.reconfig()
-					}
-					w.state.Unlock()
-					if err != nil {
-						log.Println("HUP:", err)
-						break
-					}
-					isArmed := i >= threshold
-					threshold = w.config.Notify.Threshold
-					prethreshold = threshold - 1
-					delay = w.config.Notify.Delay.Unwrap()
-					if i >= threshold && !isArmed {
-						timer = time.AfterFunc(delay, arm)
-					} else if i <= prethreshold && isArmed {
-						timer.Stop()
-					}
+				}
+			case <-hupchan:
+				isArmed := i >= threshold
+				threshold = w.config.Notify.Threshold
+				prethreshold = threshold - 1
+				delay = w.config.Notify.Delay.Unwrap()
+				if i >= threshold && !isArmed {
+					timer = time.AfterFunc(delay, arm)
+				} else if i <= prethreshold && isArmed {
+					timer.Stop()
 				}
 			case <-sigstop:
+				stopchan <- struct{}{}
 				return
 			}
 		}
 	}()
-	select {
-	case <-firechan:
-		sigstop <- struct{}{}
-		w.fire()
-	case <-w.stopchan:
-		sigstop <- struct{}{}
-		w.stop()
-	}
 }
 
 func (w *Wanted) fire() {
@@ -272,8 +301,8 @@ func (w *Wanted) Errors() <-chan error {
 	return w.errors
 }
 
-func (w *Wanted) IsDone() bool {
-	return w.state.Get() == StateDone
+func (w *Wanted) State() State {
+	return w.state.Get()
 }
 
 func (w *Wanted) reconfig() error {
@@ -343,16 +372,27 @@ func (w *Wanted) doAsyncBroadcast(wg *sync.WaitGroup, deadline time.Time) {
 			w.errors <- err
 			return
 		}
-		errors := make(chan error, w.config.Async.Broadcast.errorsCap())
+		errorsCap := w.config.Async.Broadcast.errorsCap() - 1
+		errchan := make(chan error, errorsCap)
 		sendBroadcast(
 			w.udpConn,
 			w.config.Async.Broadcast.Addr,
 			msg,
-			errors,
+			errchan,
 			deadline,
 		)
-		for err = range errors {
+		i := 0
+		for err = range errchan {
+			if i > errorsCap {
+				log.Println(err)
+				continue
+			}
+			i++
 			w.errors <- err
+			if i == errorsCap {
+				i++
+				w.errors <- errors.New("too many broadcast errors")
+			}
 		}
 	}()
 }
@@ -402,17 +442,17 @@ func (w *Wanted) doAsyncRequest(wg *sync.WaitGroup, deadline time.Time) {
 		request := func(url string) {
 			defer wg.Done()
 			if hasFiles {
-				errors := make(chan error, errorsCap)
+				errchan := make(chan error, errorsCap)
 				postFiles(
 					httpClient,
 					url,
 					files,
-					errors,
+					errchan,
 					true,
 					compress,
 					deadline,
 				)
-				for err := range errors {
+				for err := range errchan {
 					w.errors <- err
 				}
 			} else {
@@ -563,7 +603,7 @@ func NewWanted(c Config) *Wanted {
 	return &Wanted{
 		config:   c,
 		errors:   make(chan error, c.errorsCap()),
-		stopchan: make(chan struct{}),
+		stopchan: make(chan struct{}, 1),
 		state:    state{v: StateNone},
 		udpConn:  nil,
 	}
