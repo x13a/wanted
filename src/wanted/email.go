@@ -148,16 +148,14 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 			return
 		}
 		bufLen := len(attachment.Buffer)
-		i := 0
-		for i < bufLen {
-			pos := min(i+emailMaxLineLen, bufLen)
+		for i, pos := 0, 0; i < bufLen; i = pos {
+			pos = min(i+emailMaxLineLen, bufLen)
 			if _, err = part.Write(attachment.Buffer[i:pos]); err != nil {
 				return
 			}
 			if _, err = io.WriteString(part, emailNewLine); err != nil {
 				return
 			}
-			i = pos
 		}
 	}
 	if err = mw.Close(); err != nil {

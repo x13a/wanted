@@ -2,6 +2,7 @@ package wanted
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -27,6 +28,27 @@ const (
 	DefaultKillSignal      = syscall.SIGKILL
 	FallbackRunExecutable  = "/bin/sh"
 )
+
+const (
+	RemoveNone RemoveType = iota
+	RemoveSimple
+	RemoveSecure
+)
+
+type RemoveType int
+
+func (r *RemoveType) UnmarshalJSON(b []byte) error {
+	var i int
+	if err := json.Unmarshal(b, &i); err != nil {
+		return err
+	}
+	v := RemoveType(i)
+	if v < RemoveNone || v > RemoveSecure {
+		return errors.New("invalid remove value: " + strconv.Itoa(i))
+	}
+	*r = v
+	return nil
+}
 
 type Config struct {
 	Notify Notify `json:"notify"`
@@ -68,16 +90,11 @@ func (c *Config) prepare() {
 	c.Notify.prepare()
 	c.Async.prepare()
 	c.Kill.prepare()
+	c.Remove.prepare()
 	c.Run.prepare()
-	if *c.Async.Request.Remove {
-		c.Remove.Paths = append(c.Remove.Paths, c.Async.Request.Files...)
-	}
-	if *c.Async.Mail.Remove {
-		c.Remove.Paths = append(c.Remove.Paths, c.Async.Mail.Files...)
-	}
-	if *c.Kill.Remove {
-		c.Remove.Paths = append(c.Remove.Paths, c.Kill.PidFiles...)
-	}
+	c.Remove.extend(c.Async.Request.Files, c.Async.Request.Remove)
+	c.Remove.extend(c.Async.Mail.Files, c.Async.Mail.Remove)
+	c.Remove.extend(c.Kill.PidFiles, c.Kill.Remove)
 }
 
 func (c *Config) len() int {
@@ -118,11 +135,11 @@ func (n *Notify) prepare() {
 type Broadcast struct {
 	Password string `json:"password"`
 	Addr     string `json:"addr"`
-	Ignore   *bool  `json:"ignore"`
+	Ignore   bool   `json:"ignore"`
 }
 
 func (b *Broadcast) len() int {
-	if *b.Ignore || b.Password == "" {
+	if b.Ignore || b.Password == "" {
 		return 0
 	}
 	return 1
@@ -142,9 +159,6 @@ func (b *Broadcast) prepare() {
 	if b.Addr == "" {
 		b.Addr = DefaultBroacastAddress
 	}
-	if b.Ignore == nil {
-		setBoolRef(&b.Ignore, false)
-	}
 }
 
 func (b *Broadcast) errorsCap() int {
@@ -152,10 +166,10 @@ func (b *Broadcast) errorsCap() int {
 }
 
 type Request struct {
-	Urls     []string `json:"urls"`
-	Files    []string `json:"files"`
-	Compress *bool    `json:"compress"`
-	Remove   *bool    `json:"remove"`
+	Urls     []string   `json:"urls"`
+	Files    []string   `json:"files"`
+	Compress *bool      `json:"compress"`
+	Remove   RemoveType `json:"remove"`
 }
 
 func (r *Request) len() int {
@@ -177,23 +191,16 @@ func (r *Request) check() error {
 		}
 	}
 	for _, path := range r.Files {
-		if _, err := os.Stat(path); err != nil {
-			log.Println(err)
-		}
+		logIfStatError(path)
 	}
 	return nil
 }
 
 func (r *Request) prepare() {
-	if len(r.Files) != 0 {
-		r.Files = extendDirFiles(r.Files)
-	}
 	if r.Compress == nil {
 		setBoolRef(&r.Compress, true)
 	}
-	if r.Remove == nil {
-		setBoolRef(&r.Remove, true)
-	}
+	r.Files = extendDirFiles(r.Files)
 }
 
 func (r *Request) errorsCap() int {
@@ -205,16 +212,16 @@ func (r *Request) errorsCapPerItem() int {
 }
 
 type Mail struct {
-	Hosts    []string `json:"hosts"`
-	Username string   `json:"username"`
-	Password string   `json:"password"`
-	From     string   `json:"from"`
-	To       []string `json:"to"`
-	Subject  string   `json:"subject"`
-	Body     string   `json:"body"`
-	Files    []string `json:"files"`
-	Compress *bool    `json:"compress"`
-	Remove   *bool    `json:"remove"`
+	Hosts    []string   `json:"hosts"`
+	Username string     `json:"username"`
+	Password string     `json:"password"`
+	From     string     `json:"from"`
+	To       []string   `json:"to"`
+	Subject  string     `json:"subject"`
+	Body     string     `json:"body"`
+	Files    []string   `json:"files"`
+	Compress *bool      `json:"compress"`
+	Remove   RemoveType `json:"remove"`
 }
 
 func (m *Mail) len() int {
@@ -275,15 +282,10 @@ func (m *Mail) prepare() {
 	if m.From == "" {
 		m.From = m.Username
 	}
-	if len(m.Files) != 0 {
-		m.Files = extendDirFiles(m.Files)
-	}
 	if m.Compress == nil {
 		setBoolRef(&m.Compress, true)
 	}
-	if m.Remove == nil {
-		setBoolRef(&m.Remove, true)
-	}
+	m.Files = extendDirFiles(m.Files)
 }
 
 func (m *Mail) errorsCap() int {
@@ -340,7 +342,7 @@ type Kill struct {
 	Pids     []int          `json:"pids"`
 	PidFiles []string       `json:"pidfiles"`
 	Signal   syscall.Signal `json:"signal"`
-	Remove   *bool          `json:"remove"`
+	Remove   RemoveType     `json:"remove"`
 }
 
 func (k *Kill) len() int {
@@ -362,32 +364,41 @@ func (k *Kill) check() error {
 }
 
 func (k *Kill) prepare() {
-	if len(k.PidFiles) != 0 {
-		k.PidFiles = extendDirFiles(k.PidFiles)
-	}
 	if k.Signal == 0 {
 		k.Signal = DefaultKillSignal
 	}
-	if k.Remove == nil {
-		setBoolRef(&k.Remove, true)
-	}
+	k.PidFiles = extendDirFiles(k.PidFiles)
 }
 
 type Remove struct {
-	Paths []string `json:"paths"`
+	FilesSecure []string `json:"files_secure"`
+	Paths       []string `json:"paths"`
 }
 
 func (r *Remove) len() int {
-	return len(r.Paths)
+	return len(r.FilesSecure) + len(r.Paths)
+}
+
+func (r *Remove) prepare() {
+	r.FilesSecure = extendDirFiles(r.FilesSecure)
 }
 
 func (r *Remove) check() error {
+	for _, path := range r.FilesSecure {
+		logIfStatError(path)
+	}
 	for _, path := range r.Paths {
-		if _, err := os.Stat(path); err != nil {
-			log.Println(err)
-		}
+		logIfStatError(path)
 	}
 	return nil
+}
+
+func (r *Remove) extend(paths []string, remove RemoveType) {
+	if remove == RemoveSecure {
+		r.FilesSecure = append(r.FilesSecure, paths...)
+	} else if remove == RemoveSimple {
+		r.Paths = append(r.Paths, paths...)
+	}
 }
 
 type Run struct {
@@ -411,9 +422,8 @@ func (r *Run) prepare() {
 }
 
 func (r *Run) check() error {
-	executable := r.Prefix[0]
-	if err := syscall.Access(executable, 0x1); err != nil {
-		return &os.PathError{"access", executable, err}
+	if err := checkExecutable(r.Prefix[0]); err != nil {
+		return err
 	}
 	return nil
 }
@@ -507,4 +517,17 @@ func extendDirFiles(v []string) []string {
 
 func setBoolRef(b **bool, v bool) {
 	*b = &v
+}
+
+func logIfStatError(path string) {
+	if _, err := os.Stat(path); err != nil {
+		log.Println(err)
+	}
+}
+
+func checkExecutable(path string) error {
+	if err := syscall.Access(path, 0x1); err != nil {
+		return &os.PathError{"access", path, err}
+	}
+	return nil
 }

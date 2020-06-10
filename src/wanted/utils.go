@@ -43,7 +43,7 @@ func postFiles(
 	url string,
 	files []string,
 	errors chan<- error,
-	ignoreFileNotFound bool,
+	ignoreFileOpenError bool,
 	compress bool,
 	deadline time.Time,
 ) {
@@ -60,7 +60,7 @@ func postFiles(
 		upload := func(index int, path string) error {
 			file, err := os.Open(path)
 			if err != nil {
-				if ignoreFileNotFound {
+				if ignoreFileOpenError {
 					errors <- err
 					return nil
 				}
@@ -169,7 +169,7 @@ func sendBroadcast(
 		errors <- err
 		return
 	}
-	broadcastSuffix := ":" + strconv.Itoa(srcaddr.Port)
+	port := srcaddr.Port
 	if conn == nil {
 		srcaddr.Port = 0
 		conn, err = net.ListenUDP(network, srcaddr)
@@ -199,19 +199,14 @@ func sendBroadcast(
 			continue
 		}
 		for _, addr := range addrs {
-			broadcast := addrToBroadcast(addr)
-			if broadcast == nil {
+			ip := addrToBroadcast(addr)
+			if ip == nil {
 				continue
 			}
-			dest, err := net.ResolveUDPAddr(
-				network,
-				broadcast.String()+broadcastSuffix,
-			)
-			if err != nil {
-				errors <- err
-				continue
-			}
-			if _, err = conn.WriteToUDP(data, dest); err != nil {
+			if _, err = conn.WriteToUDP(data, &net.UDPAddr{
+				IP:   ip,
+				Port: port,
+			}); err != nil {
 				errors <- err
 				if os.IsTimeout(err) {
 					return
@@ -236,4 +231,46 @@ func addrToBroadcast(addr net.Addr) net.IP {
 		broadcast[idx] = b | ^mask[idx]
 	}
 	return broadcast
+}
+
+func srm(path string, force bool) (err error) {
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer func() {
+		if err1 := file.Close(); err == nil {
+			err = err1
+		}
+		if err == nil || force {
+			if err1 := os.Remove(path); err == nil {
+				err = err1
+			}
+		}
+	}()
+	fileinfo, err := file.Stat()
+	if err != nil {
+		return
+	}
+	filesize := fileinfo.Size()
+	chunksize := 1 << 21
+	chunksize64 := int64(chunksize)
+	buf := make([]byte, chunksize)
+	parts := filesize / chunksize64
+	last := true
+	for i := int64(0); i < parts; i++ {
+		if _, err = file.Write(buf); err != nil {
+			last = false
+			break
+		}
+	}
+	if last {
+		if rem := filesize % chunksize64; rem != 0 {
+			_, err = file.Write(buf[:rem])
+		}
+	}
+	if err1 := file.Sync(); err == nil {
+		err = err1
+	}
+	return
 }

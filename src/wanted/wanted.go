@@ -19,11 +19,13 @@ import (
 )
 
 const (
-	Version = "0.1.5"
+	Version = "0.1.6"
 
 	BroadcastMessage = "fire"
 	ArgStdin         = "-"
+)
 
+const (
 	StateNone State = iota
 	StateStopping
 	StateWaiting
@@ -123,11 +125,12 @@ func (w *Wanted) startBroadcastMonitor() error {
 	}
 	log.Printf("broadcast listener: %q\n", addr)
 	firechan := make(chan struct{})
-	stopchan := make(chan struct{})
+	stopchan := make(chan struct{}, 1)
+	readstop := make(chan struct{})
 	go func() {
 		select {
 		case <-firechan:
-			close(stopchan)
+			close(readstop)
 			if w.config.Async.Broadcast.len() != 0 {
 				conn.SetReadDeadline(time.Now())
 				w.udpConn = conn
@@ -136,8 +139,9 @@ func (w *Wanted) startBroadcastMonitor() error {
 			}
 			w.fire()
 		case <-w.stopchan:
-			close(stopchan)
+			close(readstop)
 			conn.Close()
+			<-stopchan
 			w.stop()
 		}
 	}()
@@ -150,20 +154,22 @@ func (w *Wanted) startBroadcastMonitor() error {
 				return
 			}
 			if string(data) != BroadcastMessage {
+				log.Println("got invalid message")
 				return
 			}
 			if w.state.CompareAndSwap(StateWaiting, StateCleaning) {
 				close(firechan)
 			}
 		}
-		maxRetries := 3
 		i := 0
+		maxRetries := 3
 		for {
 			buf := make([]byte, 1<<8)
 			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				select {
-				case <-stopchan:
+				case <-readstop:
+					stopchan <- struct{}{}
 					return
 				default:
 				}
@@ -182,8 +188,8 @@ func (w *Wanted) startBroadcastMonitor() error {
 
 func (w *Wanted) startSignalMonitor() {
 	firechan := make(chan struct{})
-	sigstop := make(chan struct{})
 	stopchan := make(chan struct{}, 2)
+	sigstop := make(chan struct{})
 	go func() {
 		select {
 		case <-firechan:
@@ -191,8 +197,7 @@ func (w *Wanted) startSignalMonitor() {
 			w.fire()
 		case <-w.stopchan:
 			close(sigstop)
-			stopCap := cap(stopchan)
-			for i := 0; i < stopCap; i++ {
+			for i, n := 0, cap(stopchan); i < n; i++ {
 				<-stopchan
 			}
 			w.stop()
@@ -206,14 +211,7 @@ func (w *Wanted) startSignalMonitor() {
 		for {
 			select {
 			case <-sigchan:
-				var err error
-				ok := false
-				w.state.Lock()
-				if w.state.v < StateCleaning {
-					err = w.reconfig()
-					ok = true
-				}
-				w.state.Unlock()
+				ok, err := w.reconfig()
 				if !ok {
 					return
 				}
@@ -305,22 +303,28 @@ func (w *Wanted) State() State {
 	return w.state.Get()
 }
 
-func (w *Wanted) reconfig() error {
+func (w *Wanted) reconfig() (bool, error) {
+	ok := true
 	config := Config{}
 	if err := config.Set(w.config.path); err != nil {
-		return err
+		return ok, err
 	}
 	config.prepare()
 	if err := config.check(); err != nil {
-		return err
+		return ok, err
 	}
-	n := config.errorsCap()
-	if cap(w.errors) < n {
-		close(w.errors)
-		w.errors = make(chan error, n)
+	ok = false
+	w.state.Lock()
+	if w.state.v < StateCleaning {
+		if n := config.errorsCap(); cap(w.errors) < n {
+			close(w.errors)
+			w.errors = make(chan error, n)
+		}
+		w.config = config
+		ok = true
 	}
-	w.config = config
-	return nil
+	w.state.Unlock()
+	return ok, nil
 }
 
 func (w *Wanted) clean() {
@@ -574,6 +578,11 @@ func (w *Wanted) doKill() {
 }
 
 func (w *Wanted) doRemove() {
+	for _, path := range w.config.Remove.FilesSecure {
+		if err := srm(path, true); err != nil {
+			w.errors <- err
+		}
+	}
 	for _, path := range w.config.Remove.Paths {
 		if err := os.RemoveAll(path); err != nil {
 			w.errors <- err

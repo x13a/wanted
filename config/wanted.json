@@ -18,7 +18,7 @@
       "urls": [],
       "files": [],
       "compress": true,
-      "remove": true
+      "remove": 0
     },
     "mail": {
       "hosts": [],
@@ -30,7 +30,7 @@
       "body": "",
       "files": [],
       "compress": true,
-      "remove": true
+      "remove": 0
     },
     "timeout": "16s",
     "delay": "2s"
@@ -39,9 +39,10 @@
     "pids": [],
     "pidfiles": [],
     "signal": 9,
-    "remove": true
+    "remove": 0
   },
   "remove": {
+    "files_secure": [],
     "paths": []
   },
   "run": {
