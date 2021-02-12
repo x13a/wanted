@@ -7,7 +7,7 @@
     "broadcast": {
       "password": "",
       "addr": ":8989",
-      "ignore": false
+      "enable": false
     },
     "run": {
       "commands": [],
@@ -17,6 +17,7 @@
     "request": {
       "urls": [],
       "files": [],
+      "headers": [],
       "compress": true,
       "remove": 0
     },
@@ -32,14 +33,12 @@
       "compress": true,
       "remove": 0
     },
-    "timeout": "16s",
-    "delay": "2s"
+    "timeout": "16s"
   },
   "kill": {
     "pids": [],
     "pidfiles": [],
-    "signal": 9,
-    "remove": 0
+    "signal": 9
   },
   "remove": {
     "files_secure": [],

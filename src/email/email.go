@@ -1,8 +1,9 @@
-package wanted
+package email
 
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"io"
@@ -15,35 +16,37 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/x13a/wanted/utils"
 )
 
 const (
-	emailNewLine    = "\r\n"
-	emailMaxLineLen = 76
+	newLine    = "\r\n"
+	maxLineLen = 76
 )
 
-type emailMessage struct {
+type Message struct {
 	From        mail.Address
 	To          []mail.Address
 	Subject     string
 	Body        string
-	Attachments []emailAttachment
+	Attachments []Attachment
 }
 
-type emailAttachment struct {
+type Attachment struct {
 	Header textproto.MIMEHeader
 	Buffer []byte
 }
 
-func (m *emailMessage) SetFrom(name, addr string) {
+func (m *Message) SetFrom(name, addr string) {
 	m.From = mail.Address{name, addr}
 }
 
-func (m *emailMessage) AddTo(name, addr string) {
+func (m *Message) AddTo(name, addr string) {
 	m.To = append(m.To, mail.Address{name, addr})
 }
 
-func (m *emailMessage) MakeHeader(boundary string) textproto.MIMEHeader {
+func (m *Message) makeHeader(boundary string) textproto.MIMEHeader {
 	h := make(textproto.MIMEHeader, 6)
 	h.Set("Date", time.Now().Format(time.RFC1123Z))
 	h.Set("From", m.From.String())
@@ -58,13 +61,13 @@ func (m *emailMessage) MakeHeader(boundary string) textproto.MIMEHeader {
 	return h
 }
 
-func (m *emailMessage) AddAttachment(path string, compress bool) error {
+func (m *Message) AddAttachment(path string, compress bool) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	fileinfo, err := file.Stat()
+	fileInfo, err := file.Stat()
 	if err != nil {
 		return err
 	}
@@ -72,7 +75,7 @@ func (m *emailMessage) AddAttachment(path string, compress bool) error {
 	buf := bytes.NewBuffer(make(
 		[]byte,
 		0,
-		base64.StdEncoding.EncodedLen(int(fileinfo.Size())),
+		base64.StdEncoding.EncodedLen(int(fileInfo.Size())),
 	))
 	encoder := base64.NewEncoder(base64.StdEncoding, buf)
 	if compress {
@@ -98,36 +101,36 @@ func (m *emailMessage) AddAttachment(path string, compress bool) error {
 		"Content-Disposition",
 		"attachment; filename=\""+filepath.Base(file.Name())+"\"",
 	)
-	m.Attachments = append(m.Attachments, emailAttachment{h, buf.Bytes()})
+	m.Attachments = append(m.Attachments, Attachment{h, buf.Bytes()})
 	return nil
 }
 
-type emailWriter struct {
+type writer struct {
 	w io.Writer
 	n int64
 }
 
-func (w *emailWriter) Write(p []byte) (n int, err error) {
+func (w *writer) Write(p []byte) (n int, err error) {
 	n, err = w.w.Write(p)
 	w.n += int64(n)
 	return
 }
 
-func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
-	ew := &emailWriter{w: w}
+func (m *Message) WriteTo(w io.Writer) (n int64, err error) {
+	ew := &writer{w: w}
 	defer func() { n = ew.n }()
 	mw := multipart.NewWriter(ew)
-	for key, values := range m.MakeHeader(mw.Boundary()) {
+	for key, values := range m.makeHeader(mw.Boundary()) {
 		for _, value := range values {
 			if _, err = io.WriteString(
 				ew,
-				key+": "+value+emailNewLine,
+				key+": "+value+newLine,
 			); err != nil {
 				return
 			}
 		}
 	}
-	if _, err = io.WriteString(ew, emailNewLine); err != nil {
+	if _, err = io.WriteString(ew, newLine); err != nil {
 		return
 	}
 	h := make(textproto.MIMEHeader, 1)
@@ -139,7 +142,7 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 	if _, err = io.WriteString(part, m.Body); err != nil {
 		return
 	}
-	if _, err = io.WriteString(part, emailNewLine); err != nil {
+	if _, err = io.WriteString(part, newLine); err != nil {
 		return
 	}
 	for _, attachment := range m.Attachments {
@@ -149,11 +152,11 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		bufLen := len(attachment.Buffer)
 		for i, pos := 0, 0; i < bufLen; i = pos {
-			pos = min(i+emailMaxLineLen, bufLen)
+			pos = utils.Min(i+maxLineLen, bufLen)
 			if _, err = part.Write(attachment.Buffer[i:pos]); err != nil {
 				return
 			}
-			if _, err = io.WriteString(part, emailNewLine); err != nil {
+			if _, err = io.WriteString(part, newLine); err != nil {
 				return
 			}
 		}
@@ -161,34 +164,37 @@ func (m *emailMessage) WriteTo(w io.Writer) (n int64, err error) {
 	if err = mw.Close(); err != nil {
 		return
 	}
-	_, err = io.WriteString(ew, emailNewLine)
+	_, err = io.WriteString(ew, newLine)
 	return
 }
 
-func sendMailTLS(
+func SendMailTLS(
+	ctx context.Context,
 	addr string,
 	auth smtp.Auth,
-	msg emailMessage,
-	timeout time.Duration,
-	deadline time.Time,
+	msg Message,
 ) error {
-	hostname := getHostnameFromHost(addr)
+	hostname := utils.HostToHostname(addr)
 	if hostname == addr {
 		addr += ":465"
 	}
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: timeout, Deadline: deadline},
-		"tcp",
-		addr,
-		&tls.Config{ServerName: hostname},
-	)
+	conn, err := (&tls.Dialer{
+		NetDialer: &net.Dialer{},
+		Config:    &tls.Config{ServerName: hostname},
+	}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if err = conn.SetDeadline(deadline); err != nil {
-		return err
-	}
+	stopChan := make(chan struct{})
+	defer close(stopChan)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-stopChan:
+		}
+	}()
 	client, err := smtp.NewClient(conn, hostname)
 	if err != nil {
 		return err

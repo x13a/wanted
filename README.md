@@ -1,58 +1,48 @@
 # wanted
 
-Run predefined tasks on signal or broadcast receive.
+Run panic tasks on signal or broadcast receive.
 
 Listen for signals:
 - *USR1* to increment counter
 - *USR2* to decrement counter
-- *HUP*  to hot reload config
 
 When counter equals threshold, run "arm" goroutine which waits for delay, 
-if while this delay counter become below threshold stop "arm" goroutine, 
-else do cleanup and exit. While waiting for "fire" config can be hot reloaded.
+if while delay counter become below threshold stop "arm" goroutine, else do 
+clean and exit.
 
-Cleanup order:
+Broadcast receiver doesn't use counter.
+
+Clean order:
 - *Async* (*Broadcast*, *Run*, *Request*, *Mail*)
 - *Kill*
 - *Remove*
 - *Run*
 
-All *Async* tasks has timeout, default to *16s*, and run in parallel.
-*Run* is a list of shell commands, by default prefixed with `$SHELL -c`.
+*Async* tasks has timeout, default to *16s*, and run concurrently.
 
 ## Installation
 ```sh
 $ make
-$ make install
+$ sudo make install
 ```
 or
 ```sh
-$ brew tap x31a/tap https://bitbucket.org/x31a/homebrew-tap.git
-$ brew install x31a/tap/wanted
+$ brew tap x13a/tap
+$ brew install x13a/tap/wanted
 ```
 
 ## Usage
 ```text
 Usage of wanted:
-  -C value
-    	Check configuration file and exit
   -V	Print version and exit
-  -b	Listen for broadcast
   -c value
     	Path to configuration file (default: /usr/local/etc/wanted.json)
-  -h	Print help and exit
-  -n	Do not log clean errors
+  -m	Monitor mode (default: signal)
   -p string
     	Write pid to file
-  -r	Remove configuration file
 ```
 
 ## Example
-
-To check config and exit:
-```sh
-$ wanted -C ~/wanted.json
-```
 
 To run with custom config filepath as signal receiver:
 ```sh
@@ -61,5 +51,5 @@ $ wanted -c ~/wanted.json
 
 To run with default config filepath as broadcast receiver:
 ```sh
-$ wanted -b
+$ wanted -m broadcast
 ```
