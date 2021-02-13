@@ -12,7 +12,7 @@ import (
 	"github.com/x13a/wanted/monitor"
 )
 
-const Version = "0.2.0"
+const Version = "0.2.1"
 
 type cleaner struct {
 	config config.Config

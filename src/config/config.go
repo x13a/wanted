@@ -485,6 +485,7 @@ func (m *Mail) send(
 	host string,
 	errChan chan<- error,
 ) {
+	defer wg.Done()
 	msg := email.Message{}
 	for _, to := range m.To {
 		msg.AddTo("", to)
