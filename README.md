@@ -25,11 +25,6 @@ Clean order:
 $ make
 $ sudo make install
 ```
-or
-```sh
-$ brew tap x13a/tap
-$ brew install x13a/tap/wanted
-```
 
 ## Usage
 ```text
